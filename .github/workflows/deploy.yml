@@ -128,6 +128,49 @@ jobs:
             REMOTE_DIR='${{ env.REMOTE_DIR }}' \
             bash -s <<'EOF'
           set -euo pipefail
+
+          # Non-interactive SSH skips .bashrc — load nvm / Node into PATH.
+          export PATH="/usr/local/bin:/usr/bin:$PATH"
+
+          # nvm (this server: /root/.nvm/versions/node/v24.x/bin/npm)
+          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+          if [ ! -s "$NVM_DIR/nvm.sh" ] && [ -s /root/.nvm/nvm.sh ]; then
+            NVM_DIR=/root/.nvm
+          fi
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            # shellcheck disable=SC1091
+            . "$NVM_DIR/nvm.sh"
+            # Activate default / current node (non-interactive has no shell hook)
+            nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
+          fi
+          # Fallback: newest nvm-installed node bin dir
+          if ! command -v npm >/dev/null 2>&1 && [ -d "$NVM_DIR/versions/node" ]; then
+            LATEST_NODE_BIN="$(ls -d "$NVM_DIR"/versions/node/v*/bin 2>/dev/null | sort -V | tail -1 || true)"
+            if [ -n "${LATEST_NODE_BIN:-}" ]; then
+              export PATH="$LATEST_NODE_BIN:$PATH"
+            fi
+          fi
+          # Other common locations
+          for d in /usr/local/node/bin /snap/bin; do
+            [ -d "$d" ] && export PATH="$d:$PATH"
+          done
+
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "ERROR: npm not found on the server (non-interactive PATH)."
+            echo "nvm expected at \$NVM_DIR ($NVM_DIR). Install Node once, e.g.:"
+            echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
+            echo "  . ~/.nvm/nvm.sh && nvm install 24 && nvm alias default 24"
+            echo "  npm i -g pm2"
+            echo "Then: which node npm pm2 && node -v"
+            exit 1
+          fi
+          if ! command -v pm2 >/dev/null 2>&1; then
+            echo "ERROR: pm2 not found on PATH. Install once (with nvm loaded):"
+            echo "  . \"\$NVM_DIR/nvm.sh\" && npm i -g pm2 && pm2 -v"
+            exit 1
+          fi
+          echo "Using node=$(command -v node) ($(node -v)) npm=$(command -v npm) pm2=$(command -v pm2)"
+
           cd "${REMOTE_DIR}"
 
           mkdir -p public/uploads/products
