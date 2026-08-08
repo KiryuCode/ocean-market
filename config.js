@@ -3,7 +3,7 @@
  * Products live in MySQL (database `ocean` by default) after first run
  * (seeded from DEFAULT_PRODUCTS). Manage products and photos from /admin.
  *
- * Initialize the database with: mysql -u root -p < scripts/init-ocean.sql
+ * Initialize the database with: npm run db:init  (uses MYSQL_* from .env)
  * Connection credentials: MYSQL_* in .env
  */
 
@@ -26,9 +26,11 @@ const MAX_ORDERS_PER_IP = 20;
  * MySQL connection settings (overridable via .env).
  * Defaults match scripts/init-ocean.sql local development setup.
  *
- * MYSQL_SSL=true enables TLS (secure mode) for the connection — use when
- * connecting to a remote MySQL that requires or supports encrypted links.
- * Local 127.0.0.1 setups usually leave this false/off.
+ * MYSQL_SSL=true enables TLS for the connection (remote / managed MySQL).
+ * Optional:
+ *   MYSQL_SSL_CA=/path/to/ca.pem     — trust a provider CA (preferred)
+ *   MYSQL_SSL_REJECT_UNAUTHORIZED=false — allow self-signed chains (e.g. some clouds)
+ * Local 127.0.0.1 setups usually leave MYSQL_SSL false/off.
  */
 function getMysqlConfig() {
   const sslEnabled =
@@ -36,19 +38,27 @@ function getMysqlConfig() {
     process.env.MYSQL_SSL === "true" ||
     process.env.MYSQL_SSL === "TRUE";
 
+  let ssl;
+  if (sslEnabled) {
+    const rejectUnauthorized = !(
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "0" ||
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "false" ||
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "FALSE"
+    );
+    ssl = { rejectUnauthorized };
+    if (process.env.MYSQL_SSL_CA) {
+      const fs = require("fs");
+      ssl.ca = fs.readFileSync(process.env.MYSQL_SSL_CA);
+    }
+  }
+
   return {
     host: process.env.MYSQL_HOST || "127.0.0.1",
     port: Number(process.env.MYSQL_PORT || 3306),
     user: process.env.MYSQL_USER || "ocean",
     password: process.env.MYSQL_PASSWORD || "ocean_pass",
     database: process.env.MYSQL_DATABASE || "ocean",
-    // When true, mysql2 uses TLS (ssl-mode equivalent of REQUIRED + CA verify)
-    ssl: sslEnabled
-      ? {
-          // Verify the server certificate against system CAs
-          rejectUnauthorized: true,
-        }
-      : undefined,
+    ssl,
   };
 }
 

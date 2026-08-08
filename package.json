@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node app.js",
     "dev": "node --watch app.js",
-    "db:init": "mysql -u root -p < scripts/init-ocean.sql",
+    "db:init": "node scripts/init-db.js",
     "pack": "bash scripts/pack-deploy.sh"
   },
   "engines": {

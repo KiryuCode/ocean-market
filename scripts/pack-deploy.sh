@@ -18,7 +18,10 @@ cp -a app.js cart.js config.js db.js mail.js package.json package-lock.json \
 
 # MySQL bootstrap
 mkdir -p "$DEST/scripts"
-cp -a scripts/init-ocean.sql scripts/pack-deploy.sh "$DEST/scripts/" 2>/dev/null || true
+cp -a scripts/init-db.js scripts/init-ocean.sql scripts/pack-deploy.sh "$DEST/scripts/" 2>/dev/null || true
+if [[ -f scripts/init-db.js ]]; then
+  echo "  + scripts/init-db.js"
+fi
 if [[ -f scripts/init-ocean.sql ]]; then
   echo "  + scripts/init-ocean.sql"
 fi

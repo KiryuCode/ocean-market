@@ -1,8 +1,10 @@
--- Ocean Market — MySQL database bootstrap
+-- Ocean Market — MySQL database bootstrap (static / local fallback)
+-- Prefer:  npm run db:init   (uses MYSQL_* from .env via scripts/init-db.js)
+--
 -- Creates database `ocean`, app user, grants, and empty tables.
 -- Tables are also ensured by the app on startup (db.initDb).
 --
--- Usage (as MySQL root or an admin account):
+-- Manual usage (as MySQL root or an admin account):
 --
 --   sudo mysql < scripts/init-ocean.sql
 --   # or:
