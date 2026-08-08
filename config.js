@@ -27,9 +27,8 @@ const MAX_ORDERS_PER_IP = 20;
  * Defaults match scripts/init-ocean.sql local development setup.
  *
  * MYSQL_SSL=true enables TLS for the connection (remote / managed MySQL).
- * Optional:
- *   MYSQL_SSL_CA=/path/to/ca.pem     — trust a provider CA (preferred)
- *   MYSQL_SSL_REJECT_UNAUTHORIZED=false — allow self-signed chains (e.g. some clouds)
+ * Self-signed / provider cert chains are accepted by default (rejectUnauthorized
+ * false). Tighten later with MYSQL_SSL_CA and/or MYSQL_SSL_REJECT_UNAUTHORIZED=true.
  * Local 127.0.0.1 setups usually leave MYSQL_SSL false/off.
  */
 function getMysqlConfig() {
@@ -40,15 +39,26 @@ function getMysqlConfig() {
 
   let ssl;
   if (sslEnabled) {
-    const rejectUnauthorized = !(
-      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "0" ||
-      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "false" ||
-      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "FALSE"
-    );
-    ssl = { rejectUnauthorized };
+    // Default: allow self-signed chains (common on managed MySQL / prod for now).
+    // Opt into verification with MYSQL_SSL_REJECT_UNAUTHORIZED=true or a CA file.
+    const forceVerify =
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "1" ||
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "true" ||
+      process.env.MYSQL_SSL_REJECT_UNAUTHORIZED === "TRUE";
+    ssl = {
+      rejectUnauthorized: forceVerify,
+    };
     if (process.env.MYSQL_SSL_CA) {
       const fs = require("fs");
       ssl.ca = fs.readFileSync(process.env.MYSQL_SSL_CA);
+      // Providing a CA implies we want to trust that CA (unless explicitly false)
+      if (
+        process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== "0" &&
+        process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== "false" &&
+        process.env.MYSQL_SSL_REJECT_UNAUTHORIZED !== "FALSE"
+      ) {
+        ssl.rejectUnauthorized = true;
+      }
     }
   }
 

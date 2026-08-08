@@ -65,9 +65,24 @@ sudo systemctl enable --now mysqld
 sudo systemctl status mysqld
 ```
 
-### 4. Create the `ocean` database
+### 4. Environment
 
-Run the project bootstrap script as a MySQL admin (creates `ocean`, user `ocean`, grants, and empty tables):
+```bash
+cp .env.example .env
+# edit MYSQL_*, SESSION_SECRET, SITE_URL, SMTP / EMAIL_TO as needed
+```
+
+### 5. Create the database and tables
+
+Preferred: use `npm run db:init`, which reads `MYSQL_*` from `.env` (works with local MySQL and managed hosts like Aiven):
+
+```bash
+npm run db:init
+```
+
+This creates the database (when privileges allow) and the `products`, `orders`, and `ip_order_counts` tables.
+
+For a classic local root bootstrap with hardcoded defaults, you can still run:
 
 ```bash
 # Preferred on Ubuntu when root uses auth_socket:
@@ -77,18 +92,10 @@ sudo mysql < scripts/init-ocean.sql
 mysql -u root -p < scripts/init-ocean.sql
 ```
 
-Verify:
+Optional local verify:
 
 ```bash
 mysql -u ocean -pocean_pass -h 127.0.0.1 ocean -e "SHOW TABLES;"
-```
-
-### 5. Environment
-
-```bash
-cp .env.example .env
-# edit SMTP / EMAIL_TO if you want order emails
-# MySQL defaults already match scripts/init-ocean.sql
 ```
 
 ### 6. Start the server
@@ -160,7 +167,7 @@ mysql --version
 # should report Ver 8.4.x
 ```
 
-Then run `scripts/init-ocean.sql` as shown in step 4 above.
+Then configure `.env` and run `npm run db:init` (see steps 4–5 above).
 
 ---
 
@@ -187,13 +194,15 @@ Copy [`.env.example`](./.env.example) to `.env` and fill in values. The server l
 |--------------------|--------------------------------------|-------------|
 | `PORT`             | `3000`                               | Server port |
 | `SITE_URL`         | `http://127.0.0.1:PORT`              | Public origin for SEO (canonical, OG, sitemap) — set to your HTTPS domain in production |
-| `SESSION_SECRET`   | `change-me-ocean-market-session`     | Session cookie signing secret |
+| `SESSION_SECRET`   | `change-me-ocean-market-session`     | Session cookie signing secret (generate with base64 — see below) |
 | `MYSQL_HOST`       | `127.0.0.1`                          | MySQL host |
 | `MYSQL_PORT`       | `3306`                               | MySQL port |
 | `MYSQL_USER`       | `ocean`                              | MySQL user (see init script) |
 | `MYSQL_PASSWORD`   | `ocean_pass`                         | MySQL password |
 | `MYSQL_DATABASE`   | `ocean`                               | Database name |
-| `MYSQL_SSL`        | `false`                              | Set `true` for TLS/secure MySQL connections |
+| `MYSQL_SSL`        | `false`                              | Set `true` for TLS (required by many managed MySQL hosts) |
+| `MYSQL_SSL_CA`     | —                                    | Optional path to a CA PEM; when set, cert verification is enabled |
+| `MYSQL_SSL_REJECT_UNAUTHORIZED` | `false` (default when SSL on) | Set `true` to require a trusted cert chain |
 | `EMAIL_TO`         | —                                    | Recipient for order confirmation emails |
 | `SMTP_HOST`        | —                                    | SMTP server hostname (e.g. `smtp.gmail.com`) |
 | `SMTP_PORT`        | `587`                                | SMTP port (`587` STARTTLS, or `465` SSL) |
@@ -204,13 +213,34 @@ Copy [`.env.example`](./.env.example) to `.env` and fill in values. The server l
 
 When an order is placed, an HTML receipt is emailed to `EMAIL_TO`. If SMTP is not configured, the order still succeeds and a warning is logged.
 
+Generate a strong `SESSION_SECRET` (base64, 32 random bytes):
+
+```bash
+openssl rand -base64 32
+```
+
+Paste the output into `.env`:
+
+```bash
+SESSION_SECRET=paste-the-openssl-output-here
+```
+
+**MySQL TLS (managed / remote DB):** set `MYSQL_SSL=true`. Self-signed certificate chains are **accepted by default** so `npm run db:init` and the app work with providers like Aiven without extra flags. To verify strictly later:
+
+```bash
+MYSQL_SSL=true
+MYSQL_SSL_CA=/path/to/provider-ca.pem
+# or:
+MYSQL_SSL_REJECT_UNAUTHORIZED=true
+```
+
 Example:
 
 ```bash
 PORT=8080 SESSION_SECRET=your-secret-here npm start
 ```
 
-> **Security note:** Change `ADMIN_KEY`, `SESSION_SECRET`, and the MySQL `ocean` password before any real deployment. The defaults are for local development only.
+> **Security note:** Change `ADMIN_KEY`, `SESSION_SECRET`, and the MySQL password before any real deployment. Prefer a provider CA (`MYSQL_SSL_CA`) when you are ready to tighten TLS.
 
 ---
 
@@ -380,7 +410,8 @@ ocean-admin-2024
 ├── .env.example           # MySQL + SMTP + SITE_URL template (copy to .env)
 ├── package.json
 ├── scripts/
-│   ├── init-ocean.sql      # CREATE DATABASE ocean + user + tables
+│   ├── init-db.js          # npm run db:init — bootstrap from MYSQL_* in .env
+│   ├── init-ocean.sql      # Static local SQL fallback (CREATE DATABASE/user/tables)
 │   └── pack-deploy.sh     # Deploy zip builder
 ├── public/
 │   ├── css/style.css      # Storefront styles
@@ -407,14 +438,14 @@ Public SEO endpoints (no login): `/robots.txt`, `/sitemap.xml`.
 |-----------------|-------------|
 | `npm start`     | Start the server |
 | `npm run dev`   | Start with Node’s `--watch` for live reload |
-| `npm run db:init` | Run `scripts/init-ocean.sql` as MySQL root (`-p` prompts for password) |
+| `npm run db:init` | Bootstrap DB + tables using `MYSQL_*` from `.env` (`scripts/init-db.js`) |
 | `npm run pack`  | Build `ocean-market-deploy.zip` |
 
 ---
 
 ## How It Works
 
-1. **DB bootstrap** — Run `scripts/init-ocean.sql` once to create `ocean` and the app user.
+1. **DB bootstrap** — Run `npm run db:init` once (uses `.env`) to create the database and tables.
 2. **First boot** — `db.initDb()` ensures tables exist and seeds `DEFAULT_PRODUCTS` if the catalog is empty.
 3. **Browsing** — `/` lists products from MySQL.
 4. **Cart** — Items live in the Express session; quantities and line totals are computed server-side.
