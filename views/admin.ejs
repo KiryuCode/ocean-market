@@ -1,0 +1,270 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Admin</h1>
+  <p class="page-sub">
+    Manage products, pricing, stock, and orders stored in <code>local.db</code>.
+  </p>
+
+  <nav class="admin-nav" aria-label="Admin sections">
+    <button type="button" class="admin-nav-link is-active" data-section="orders">Orders</button>
+    <button type="button" class="admin-nav-link" data-section="products">Products</button>
+    <button type="button" class="admin-nav-link" data-section="add-product">Add product</button>
+    <button type="button" class="admin-nav-link" data-section="ip-counts">IP counts</button>
+  </nav>
+
+  <div class="admin-sections">
+
+    <!-- Orders -->
+    <section class="panel panel-wide admin-panel is-active" id="orders" data-section="orders">
+      <h2 class="section-title">Orders (<%= orders.length %>)</h2>
+      <% if (orders.length) { %>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Order ID</th>
+                <th>Product</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>IP</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% orders.forEach(function (order) { %>
+                <tr
+                  class="order-row"
+                  tabindex="0"
+                  role="link"
+                  data-href="/admin/orders/<%= order.order_id %>?key=<%= encodeURIComponent(adminKey) %>"
+                  title="View receipt for order <%= order.order_id_display %>"
+                >
+                  <td class="mono"><%= order.order_id_display %></td>
+                  <td>
+                    <%= order.product_name %>
+                    <div class="mono" style="color:var(--ocean-mist);font-size:0.75rem;">
+                      <%= order.product_id %>
+                    </div>
+                  </td>
+                  <td><%= order.email || '—' %></td>
+                  <td class="mono"><%= order.phone || '—' %></td>
+                  <td class="mono"><%= order.ip_address %></td>
+                  <td class="mono"><%= order.created_at %></td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <p class="empty-state">No orders yet.</p>
+      <% } %>
+    </section>
+
+    <!-- Products -->
+    <section class="panel panel-wide admin-panel" id="products" data-section="products" hidden>
+      <h2 class="section-title">Products (<%= products.length %>)</h2>
+      <p style="margin:0 0 1rem;color:var(--ocean-mist);font-size:0.9rem;">
+        Update price and quantity available, or upload a new photo.
+      </p>
+
+      <% if (products.length) { %>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>Photo</th>
+                <th>Product</th>
+                <th>Price &amp; qty</th>
+                <th>Upload photo</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% products.forEach(function (product) { %>
+                <tr>
+                  <td>
+                    <img
+                      class="admin-thumb"
+                      src="<%= product.image %>"
+                      alt="<%= product.name %>"
+                      width="64"
+                      height="32"
+                    >
+                  </td>
+                  <td>
+                    <strong><%= product.name %></strong>
+                    <div class="mono" style="color:var(--ocean-mist);font-size:0.75rem;">
+                      <%= product.id %>
+                    </div>
+                    <div style="color:var(--ocean-mist);font-size:0.85rem;margin-top:0.25rem;">
+                      <%= product.description %>
+                    </div>
+                  </td>
+                  <td>
+                    <form
+                      method="post"
+                      action="/admin/products/<%= product.id %>/update"
+                      class="admin-pricing-form"
+                    >
+                      <input type="hidden" name="key" value="<%= adminKey %>">
+                      <label class="admin-field-label">
+                        Price
+                        <input
+                          type="number"
+                          name="price"
+                          min="0"
+                          step="0.01"
+                          value="<%= formatPrice(product.price) %>"
+                          required
+                          class="admin-inline-input"
+                        >
+                      </label>
+                      <label class="admin-field-label">
+                        Qty available
+                        <input
+                          type="number"
+                          name="qty_available"
+                          min="0"
+                          step="1"
+                          value="<%= product.qtyAvailable %>"
+                          required
+                          class="admin-inline-input"
+                        >
+                      </label>
+                      <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                    </form>
+                  </td>
+                  <td>
+                    <form
+                      method="post"
+                      action="/admin/products/<%= product.id %>/photo"
+                      enctype="multipart/form-data"
+                      class="admin-photo-form"
+                    >
+                      <input type="hidden" name="key" value="<%= adminKey %>">
+                      <input type="file" name="photo" accept="image/jpeg,image/png,image/gif,image/webp" required>
+                      <button type="submit" class="btn btn-secondary btn-sm">Upload</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <p class="empty-state">No products yet. Add one below.</p>
+      <% } %>
+    </section>
+
+    <!-- Add product -->
+    <section class="panel panel-wide admin-panel" id="add-product" data-section="add-product" hidden>
+      <h2 class="section-title">Add new product</h2>
+      <form
+        method="post"
+        action="/admin/products"
+        enctype="multipart/form-data"
+        class="admin-add-form"
+      >
+        <input type="hidden" name="key" value="<%= adminKey %>">
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="name">Name</label>
+            <input type="text" id="name" name="name" required placeholder="Sea Glass Necklace">
+          </div>
+          <div class="form-group">
+            <label for="price">Price (USD)</label>
+            <input type="number" id="price" name="price" min="0" step="0.01" required placeholder="19.99">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="qty_available">Qty available</label>
+            <input type="number" id="qty_available" name="qty_available" min="0" step="1" value="25" required>
+          </div>
+          <div class="form-group">
+            <label for="id">
+              Product ID
+              <span style="font-weight:400;color:var(--ocean-mist)">(optional)</span>
+            </label>
+            <input type="text" id="id" name="id" placeholder="sea-glass-necklace" pattern="[a-z0-9\-]*">
+            <span class="hint">Auto-built from name if left blank.</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="description">Description</label>
+          <textarea id="description" name="description" rows="3" placeholder="Short product description"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="photo">
+            Photo
+            <span style="font-weight:400;color:var(--ocean-mist)">(optional)</span>
+          </label>
+          <input type="file" id="photo" name="photo" accept="image/jpeg,image/png,image/gif,image/webp">
+          <span class="hint">JPEG, PNG, GIF, or WebP — max 5&nbsp;MB. A placeholder is used if omitted.</span>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Add product</button>
+      </form>
+    </section>
+
+    <!-- IP counts -->
+    <section class="panel panel-wide admin-panel" id="ip-counts" data-section="ip-counts" hidden>
+      <div class="section-heading-row">
+        <h2 class="section-title">IP order counts</h2>
+        <% if (ipCounts.length) { %>
+          <form method="post" action="/admin/ip-counts/reset?key=<%= encodeURIComponent(adminKey) %>">
+            <input type="hidden" name="key" value="<%= adminKey %>">
+            <input type="hidden" name="ip_address" value="all">
+            <button type="submit" class="btn btn-secondary btn-sm">Reset all counters</button>
+          </form>
+        <% } %>
+      </div>
+      <p style="margin:0 0 0.5rem;color:var(--ocean-mist);font-size:0.9rem;">
+        Separate table used to enforce the per-IP limit (<%= maxOrdersPerIp %> max).
+        Reset clears the counter only — it does not delete orders.
+      </p>
+      <% if (ipCounts.length) { %>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>IP address</th>
+                <th>Orders placed</th>
+                <th>Remaining</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <% ipCounts.forEach(function (row) { %>
+                <tr>
+                  <td class="mono"><%= row.ip_address %></td>
+                  <td><%= row.order_count %></td>
+                  <td><%= Math.max(0, maxOrdersPerIp - row.order_count) %></td>
+                  <td>
+                    <form method="post" action="/admin/ip-counts/reset?key=<%= encodeURIComponent(adminKey) %>">
+                      <input type="hidden" name="key" value="<%= adminKey %>">
+                      <input type="hidden" name="ip_address" value="<%= row.ip_address %>">
+                      <button type="submit" class="btn btn-secondary btn-sm">Reset</button>
+                    </form>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } else { %>
+        <p class="empty-state">No IP activity yet.</p>
+      <% } %>
+    </section>
+  </div>
+
+  <p style="margin-top:1.5rem;">
+    <a class="btn btn-secondary" href="/">Back to shop</a>
+  </p>
+
+  <script src="/js/admin.js" defer></script>
+
+<%- include('partials/footer') %>

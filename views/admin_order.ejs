@@ -1,0 +1,134 @@
+<%- include('partials/header') %>
+
+  <div class="receipt-toolbar">
+    <a
+      class="btn btn-secondary btn-sm"
+      href="/admin?key=<%= encodeURIComponent(adminKey) %>#orders"
+    >← Back to orders</a>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="window.print()">Print</button>
+  </div>
+
+  <article class="receipt panel panel-wide">
+    <header class="receipt-header">
+      <div>
+        <p class="receipt-store"><%= storeName %></p>
+        <p class="receipt-tagline"><%= storeTagline %></p>
+      </div>
+      <div class="receipt-meta">
+        <h1 class="receipt-title">Receipt</h1>
+        <p class="receipt-order-id mono">Order #<%= order.order_id_display %></p>
+      </div>
+    </header>
+
+    <section class="receipt-info">
+      <div>
+        <h2 class="receipt-label">Order details</h2>
+        <dl class="receipt-dl">
+          <div>
+            <dt>Order ID</dt>
+            <dd class="mono"><%= order.order_id_display %></dd>
+          </div>
+          <div>
+            <dt>Date</dt>
+            <dd class="mono"><%= order.created_at %></dd>
+          </div>
+          <div>
+            <dt>Customer email</dt>
+            <dd><%= order.email || 'Not provided' %></dd>
+          </div>
+          <div>
+            <dt>Phone</dt>
+            <dd class="mono"><%= order.phone || 'Not provided' %></dd>
+          </div>
+          <div>
+            <dt>IP address</dt>
+            <dd class="mono"><%= order.ip_address %></dd>
+          </div>
+        </dl>
+      </div>
+      <div class="receipt-status">
+        <span class="receipt-badge">Confirmed</span>
+        <p>Thank you for your order. Keep this receipt for your records.</p>
+      </div>
+    </section>
+
+    <section class="receipt-items">
+      <h2 class="receipt-label">Items</h2>
+
+      <% if (!lineItems.length) { %>
+        <p class="empty-state">No line items found for this order.</p>
+      <% } else { %>
+        <div class="receipt-lines">
+          <% lineItems.forEach(function (item) { %>
+            <div class="receipt-line">
+              <% if (item.image) { %>
+                <img
+                  class="receipt-thumb"
+                  src="<%= item.image %>"
+                  alt="<%= item.name %>"
+                  width="72"
+                  height="36"
+                >
+              <% } else { %>
+                <div class="receipt-thumb receipt-thumb-empty" aria-hidden="true">—</div>
+              <% } %>
+
+              <div class="receipt-line-body">
+                <div class="receipt-line-top">
+                  <h3 class="receipt-item-name"><%= item.name %></h3>
+                  <% if (item.lineTotal !== null) { %>
+                    <span class="price">$<%= formatPrice(item.lineTotal) %></span>
+                  <% } %>
+                </div>
+                <p class="receipt-item-meta mono">
+                  SKU: <%= item.productId %>
+                  · Qty: <%= item.quantity %>
+                  <% if (item.unitPrice !== null) { %>
+                    · $<%= formatPrice(item.unitPrice) %> each
+                  <% } %>
+                </p>
+                <% if (item.description) { %>
+                  <p class="receipt-item-desc"><%= item.description %></p>
+                <% } %>
+                <% if (!item.stillListed) { %>
+                  <p class="receipt-item-note">Product no longer in catalog — details from order record.</p>
+                <% } %>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+
+        <div class="receipt-totals">
+          <% if (hasPrices) { %>
+            <div class="receipt-total-row">
+              <span>Subtotal</span>
+              <span class="price">$<%= formatPrice(subtotal) %></span>
+            </div>
+            <div class="receipt-total-row">
+              <span>Tax</span>
+              <span>$0.00</span>
+            </div>
+            <div class="receipt-total-row receipt-total-grand">
+              <span>Total</span>
+              <span class="price">$<%= formatPrice(subtotal) %></span>
+            </div>
+          <% } else { %>
+            <div class="receipt-total-row">
+              <span>Items ordered</span>
+              <span><%= lineItems.reduce(function (n, i) { return n + i.quantity; }, 0) %></span>
+            </div>
+            <p class="receipt-item-note">
+              Full pricing is shown when products are still in the catalog.
+            </p>
+          <% } %>
+        </div>
+      <% } %>
+    </section>
+
+    <footer class="receipt-footer">
+      <p><%= storeName %> · Order #<%= order.order_id_display %></p>
+      <p>Demo store receipt — no payment was processed.</p>
+    </footer>
+  </article>
+
+<%- include('partials/footer') %>

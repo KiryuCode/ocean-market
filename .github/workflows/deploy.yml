@@ -1,0 +1,161 @@
+# Deploy Ocean Market to the VPS over SSH.
+# Server: root@74.208.52.135  →  /web/ocean-market  (pm2: ocean-market, nginx → :3000)
+#
+# Required GitHub Actions secret:
+#   SSH_PRIVATE_KEY  — private key authorized for root@74.208.52.135
+#   (Settings → Secrets and variables → Actions → Secrets)
+#
+# Paste the full PEM including BEGIN/END lines. If libcrypto errors persist,
+# store base64 instead: base64 -w0 < /path/to/private_key
+#
+# On the server, create once and leave in place:
+#   /web/ocean-market/.env   (see .env.example / HOSTING.md)
+#   MySQL database via scripts/init-mydb.sql
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  HOST: 74.208.52.135
+  REMOTE_USER: root
+  REMOTE_DIR: /web/ocean-market
+  NODE_VERSION: "20"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install (CI smoke check)
+        run: npm ci
+
+      - name: Configure SSH
+        env:
+          # Pass via env so multiline values are not mangled by shell quoting
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          if [ -z "${SSH_PRIVATE_KEY//[$' \t\r\n']/}" ]; then
+            echo "ERROR: secrets.SSH_PRIVATE_KEY is empty or unset."
+            echo "Set it under Settings → Secrets and variables → Actions → Secrets."
+            exit 1
+          fi
+
+          # 1) Prefer base64 (single-line Variables are reliable)
+          decoded=0
+          if printf '%s' "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null \
+            && grep -qE 'BEGIN .*PRIVATE KEY' ~/.ssh/deploy_key; then
+            decoded=1
+            echo "Loaded SSH key from base64-encoded variable"
+          fi
+
+          # 2) Raw PEM (real newlines or literal \n from the UI)
+          if [ "$decoded" -eq 0 ]; then
+            printf '%s' "$SSH_PRIVATE_KEY" | sed 's/\r$//' > ~/.ssh/deploy_key
+            if ! grep -qE 'BEGIN .*PRIVATE KEY' ~/.ssh/deploy_key; then
+              # literal backslash-n sequences
+              printf '%s' "$SSH_PRIVATE_KEY" | sed 's/\r//g; s/\\n/\n/g' > ~/.ssh/deploy_key
+            fi
+            echo "Loaded SSH key as PEM text"
+          fi
+
+          # OpenSSH requires a trailing newline
+          if [ -s ~/.ssh/deploy_key ] && [ "$(tail -c1 ~/.ssh/deploy_key | wc -l)" -eq 0 ]; then
+            echo >> ~/.ssh/deploy_key
+          fi
+          chmod 600 ~/.ssh/deploy_key
+
+          # Fail early with a clear message (do not print key material)
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
+            echo "ERROR: deploy_key is not a valid SSH private key (would cause libcrypto error)."
+            echo "  size:  $(wc -c < ~/.ssh/deploy_key) bytes"
+            echo "  lines: $(wc -l < ~/.ssh/deploy_key)"
+            echo "  head:  $(head -1 ~/.ssh/deploy_key | tr -cd 'A-Za-z0-9 /+=' | cut -c1-40)..."
+            echo ""
+            echo "Fix: re-store secret SSH_PRIVATE_KEY as the full PEM, or base64 of the key file:"
+            echo "  base64 -w0 < /path/to/private_key"
+            exit 1
+          fi
+          echo "SSH private key OK ($(wc -l < ~/.ssh/deploy_key) lines)"
+
+          ssh-keyscan -H "${{ env.HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Rsync app to server
+        run: |
+          # Never overwrite .env, node_modules, or product uploads on the server
+          rsync -avz \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            --exclude node_modules \
+            --exclude .env \
+            --exclude .git \
+            --exclude .github \
+            --exclude local.db \
+            --exclude local.db-shm \
+            --exclude local.db-wal \
+            --exclude public/uploads \
+            app.js \
+            cart.js \
+            config.js \
+            db.js \
+            mail.js \
+            package.json \
+            package-lock.json \
+            .env.example \
+            views \
+            public \
+            scripts \
+            "${{ env.REMOTE_USER }}@${{ env.HOST }}:${{ env.REMOTE_DIR }}/"
+
+      - name: Install and restart on server
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
+            "${{ env.REMOTE_USER }}@${{ env.HOST }}" \
+            REMOTE_DIR='${{ env.REMOTE_DIR }}' \
+            bash -s <<'EOF'
+          set -euo pipefail
+          cd "${REMOTE_DIR}"
+
+          mkdir -p public/uploads/products
+
+          if [ ! -f .env ]; then
+            echo "WARNING: .env missing in ${REMOTE_DIR} — copy from .env.example before first use"
+          fi
+
+          echo "==> Installing dependencies"
+          npm ci --omit=dev
+
+          echo "==> Restarting pm2 process: ocean-market"
+          if pm2 describe ocean-market >/dev/null 2>&1; then
+            pm2 restart ocean-market --update-env
+          else
+            # First-time boot: Express on 127.0.0.1:3000 (nginx proxies to this port)
+            # Prefer HOST=127.0.0.1 in .env when behind nginx
+            pm2 start app.js --name ocean-market
+          fi
+          pm2 save
+          pm2 status ocean-market
+
+          echo "==> Health check"
+          sleep 2
+          curl -sf -o /dev/null -w "HTTP %{http_code}\n" http://127.0.0.1:3000/ || {
+            echo "Health check failed — recent logs:"
+            pm2 logs ocean-market --lines 40 --nostream
+            exit 1
+          }
+          echo "Deploy complete."
+          EOF

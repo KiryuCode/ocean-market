@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <%
+    // Prefer route-level `title`, then seo.title from config/app, then store name
+    const pageTitle = typeof title !== 'undefined' && title
+      ? title
+      : (typeof seo !== 'undefined' && seo && seo.title) || storeName;
+    const metaDescription = (typeof seo !== 'undefined' && seo && seo.description) || storeTagline || '';
+    const metaKeywords = (typeof seo !== 'undefined' && seo && seo.keywords) || '';
+    const metaRobots = (typeof seo !== 'undefined' && seo && seo.robots) || 'index, follow';
+    const metaCanonical = (typeof seo !== 'undefined' && seo && seo.canonical) || '';
+    const metaImage = (typeof seo !== 'undefined' && seo && seo.image) || '';
+    const metaType = (typeof seo !== 'undefined' && seo && seo.type) || 'website';
+    const metaLocale = (typeof seo !== 'undefined' && seo && seo.locale) || 'en_US';
+    const metaSiteName = (typeof seo !== 'undefined' && seo && seo.siteName) || storeName;
+    const metaSiteUrl = (typeof seo !== 'undefined' && seo && seo.siteUrl) || '';
+    const twitterCard = (typeof seo !== 'undefined' && seo && seo.twitterCard) || 'summary';
+    const twitterSite = (typeof seo !== 'undefined' && seo && seo.twitterSite) || '';
+  %>
+  <title><%= pageTitle %></title>
+  <% if (metaDescription) { %>
+  <meta name="description" content="<%= metaDescription %>">
+  <% } %>
+  <% if (metaKeywords) { %>
+  <meta name="keywords" content="<%= metaKeywords %>">
+  <% } %>
+  <meta name="robots" content="<%= metaRobots %>">
+  <% if (metaCanonical) { %>
+  <link rel="canonical" href="<%= metaCanonical %>">
+  <% } %>
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="<%= metaType %>">
+  <meta property="og:site_name" content="<%= metaSiteName %>">
+  <meta property="og:title" content="<%= pageTitle %>">
+  <% if (metaDescription) { %>
+  <meta property="og:description" content="<%= metaDescription %>">
+  <% } %>
+  <% if (metaCanonical) { %>
+  <meta property="og:url" content="<%= metaCanonical %>">
+  <% } %>
+  <% if (metaImage) { %>
+  <meta property="og:image" content="<%= metaImage %>">
+  <% } %>
+  <meta property="og:locale" content="<%= metaLocale %>">
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="<%= twitterCard %>">
+  <meta name="twitter:title" content="<%= pageTitle %>">
+  <% if (metaDescription) { %>
+  <meta name="twitter:description" content="<%= metaDescription %>">
+  <% } %>
+  <% if (metaImage) { %>
+  <meta name="twitter:image" content="<%= metaImage %>">
+  <% } %>
+  <% if (twitterSite) { %>
+  <meta name="twitter:site" content="@<%= twitterSite %>">
+  <% } %>
+
+  <% if (metaSiteUrl) { %>
+  <!-- JSON-LD: OnlineStore -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "OnlineStore",
+    "name": <%- JSON.stringify(metaSiteName) %>,
+    "description": <%- JSON.stringify(metaDescription || storeTagline || '') %>,
+    "url": <%- JSON.stringify(metaSiteUrl) %>
+    <% if (metaImage) { %>,
+    "image": <%- JSON.stringify(metaImage) %>
+    <% } %>
+  }
+  </script>
+  <% } %>
+
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="logo" href="/">
+        <span class="logo-name"><%= storeName %></span>
+        <span class="logo-tagline"><%= storeTagline %></span>
+      </a>
+      <nav class="site-nav">
+        <a class="nav-link" href="/">Shop</a>
+        <a class="nav-link cart-link" href="/cart" id="cart-link">
+          Cart
+          <span
+            class="cart-badge"
+            id="cart-badge"
+            <% if (!(typeof cartCount !== 'undefined' && cartCount > 0)) { %>hidden<% } %>
+          ><%= typeof cartCount !== 'undefined' ? cartCount : 0 %></span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="main">
+    <% if (typeof flashError !== 'undefined' && flashError) { %>
+      <div class="alert alert-error"><%= flashError %></div>
+    <% } %>

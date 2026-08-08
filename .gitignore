@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+local.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+.env
+public/uploads/products/*
+!public/uploads/products/.gitkeep

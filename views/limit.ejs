@@ -1,0 +1,26 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Order limit reached</h1>
+  <p class="page-sub">
+    This address has already placed the maximum of
+    <strong><%= maxOrdersPerIp %></strong> orders.
+  </p>
+
+  <div class="panel">
+    <div class="alert alert-error">
+      No more orders can be placed from your IP right now.
+      The limit is tracked separately from the order list so it stays easy to audit.
+    </div>
+
+    <% if (typeof product !== 'undefined' && product) { %>
+      <p style="color:var(--ocean-mist);">
+        You were trying to order: <strong style="color:var(--ocean-foam)"><%= product.name %></strong>
+      </p>
+    <% } %>
+
+    <div class="actions">
+      <a class="btn btn-secondary" href="/">Back to shop</a>
+    </div>
+  </div>
+
+<%- include('partials/footer') %>

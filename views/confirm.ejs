@@ -1,0 +1,94 @@
+<% const isCart = mode === 'cart'; %>
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Confirm your order</h1>
+  <p class="page-sub">
+    Review <%= isCart ? 'your cart' : 'the item' %> below, optionally leave contact details, then confirm.
+    You will get an order ID on the next screen.
+  </p>
+
+  <div class="panel<%= isCart && items.length > 1 ? ' panel-wide' : '' %>">
+    <% if (items && items.length === 1) { %>
+      <div class="product-summary">
+        <img src="<%= items[0].product.image %>" alt="<%= items[0].product.name %>" width="96" height="48">
+        <div>
+          <h2><%= items[0].product.name %></h2>
+          <% if (items[0].quantity > 1) { %>
+            <p style="margin:0;color:var(--ocean-mist);font-size:0.9rem;">Qty: <%= items[0].quantity %></p>
+          <% } %>
+          <p class="price">$<%= formatPrice(items[0].lineTotal) %></p>
+        </div>
+      </div>
+    <% } else if (items && items.length > 1) { %>
+      <div class="confirm-items">
+        <% items.forEach(function (item) { %>
+          <div class="product-summary product-summary-compact">
+            <img src="<%= item.product.image %>" alt="<%= item.product.name %>" width="64" height="32">
+            <div>
+              <h2><%= item.product.name %></h2>
+              <p style="margin:0;color:var(--ocean-mist);font-size:0.9rem;">
+                Qty: <%= item.quantity %> · $<%= formatPrice(item.lineTotal) %>
+              </p>
+            </div>
+          </div>
+        <% }) %>
+        <p class="confirm-total">
+          Order total: <strong class="price">$<%= formatPrice(total) %></strong>
+        </p>
+      </div>
+    <% } %>
+
+    <div class="instructions">
+      <strong>What happens next</strong>
+      <ol>
+        <li>Confirm this order.</li>
+        <li>You will receive a unique <strong>order ID</strong>.</li>
+        <li>If you provide an email or phone number, the store can use it to contact you about fulfillment.</li>
+        <li>Follow the on-screen steps after confirmation.</li>
+      </ol>
+    </div>
+
+    <form method="post" action="/confirm">
+      <input type="hidden" name="mode" value="<%= mode %>">
+      <% if (!isCart && product) { %>
+        <input type="hidden" name="product_id" value="<%= product.id %>">
+      <% } %>
+
+      <div class="form-group">
+        <label for="email">
+          Email address
+          <span style="font-weight:400;color:var(--ocean-mist)">(optional)</span>
+        </label>
+        <input
+          type="email"
+          id="email"
+          name="email"
+          placeholder="you@example.com"
+          autocomplete="email"
+        >
+        <span class="hint">Used only for order follow-up. Leave blank to order anonymously.</span>
+      </div>
+
+      <div class="form-group">
+        <label for="phone">
+          Phone number
+          <span style="font-weight:400;color:var(--ocean-mist)">(optional)</span>
+        </label>
+        <input
+          type="tel"
+          id="phone"
+          name="phone"
+          placeholder="(555) 123-4567"
+          autocomplete="tel"
+        >
+        <span class="hint">Optional. Used only if we need to reach you about this order.</span>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Confirm order</button>
+        <a class="btn btn-secondary" href="<%= isCart ? '/cart' : '/' %>">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+<%- include('partials/footer') %>

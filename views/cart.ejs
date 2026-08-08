@@ -1,0 +1,77 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Your cart</h1>
+  <p class="page-sub">
+    Review items below, then checkout. Checkout uses the same confirm step as Buy Now
+    (optional email → order ID).
+  </p>
+
+  <% if (!items.length) { %>
+    <div class="panel">
+      <p class="empty-state" style="padding:0;margin:0 0 1rem;">Your cart is empty.</p>
+      <a class="btn btn-primary" href="/">Continue shopping</a>
+    </div>
+  <% } else { %>
+    <div class="panel panel-wide">
+      <div class="table-wrap">
+        <table class="data cart-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Price</th>
+              <th>Qty</th>
+              <th>Line total</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% items.forEach(function (item) { %>
+              <tr>
+                <td>
+                  <div class="cart-product">
+                    <img src="<%= item.product.image %>" alt="" width="56" height="28">
+                    <span><%= item.product.name %></span>
+                  </div>
+                </td>
+                <td class="price">$<%= formatPrice(item.product.price) %></td>
+                <td>
+                  <form method="post" action="/cart/update" class="qty-form">
+                    <input type="hidden" name="product_id" value="<%= item.product.id %>">
+                    <input
+                      type="number"
+                      name="quantity"
+                      min="1"
+                      max="99"
+                      value="<%= item.quantity %>"
+                      class="qty-input"
+                      aria-label="Quantity for <%= item.product.name %>"
+                    >
+                    <button type="submit" class="btn btn-secondary btn-sm">Update</button>
+                  </form>
+                </td>
+                <td class="price">$<%= formatPrice(item.lineTotal) %></td>
+                <td>
+                  <form method="post" action="/cart/remove">
+                    <input type="hidden" name="product_id" value="<%= item.product.id %>">
+                    <button type="submit" class="btn btn-secondary btn-sm">Remove</button>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="cart-summary">
+        <div class="cart-total">
+          Total: <strong class="price">$<%= formatPrice(total) %></strong>
+        </div>
+        <div class="actions">
+          <a class="btn btn-primary" href="/cart/checkout">Checkout</a>
+          <a class="btn btn-secondary" href="/">Continue shopping</a>
+        </div>
+      </div>
+    </div>
+  <% } %>
+
+<%- include('partials/footer') %>

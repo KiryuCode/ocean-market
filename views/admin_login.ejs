@@ -1,0 +1,20 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Admin access</h1>
+  <p class="page-sub">Enter the admin key to view orders. (Configured in <code>config.js</code>.)</p>
+
+  <div class="panel">
+    <% if (typeof invalidKey !== 'undefined' && invalidKey) { %>
+      <div class="alert alert-error">Invalid admin key.</div>
+    <% } %>
+
+    <form method="post" action="/admin">
+      <div class="form-group">
+        <label for="key">Admin key</label>
+        <input type="password" id="key" name="key" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary">View orders</button>
+    </form>
+  </div>
+
+<%- include('partials/footer') %>

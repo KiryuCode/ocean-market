@@ -1,0 +1,24 @@
+{
+  "name": "ocean-market",
+  "version": "1.0.0",
+  "description": "Basic ocean-themed webstore with MySQL orders",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js",
+    "db:init": "mysql -u root -p < scripts/init-ocean.sql",
+    "pack": "bash scripts/pack-deploy.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0",
+    "mysql2": "^3.23.2",
+    "nodemailer": "^9.0.3"
+  }
+}

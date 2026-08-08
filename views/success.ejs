@@ -1,0 +1,132 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Order confirmed</h1>
+  <p class="page-sub">
+    Thank you. Your order is saved. Please follow the instructions below and keep your order ID.
+  </p>
+
+  <div class="panel<%= items && items.length > 1 ? ' panel-wide' : '' %>">
+    <p class="success-banner">✓ Your order has been placed successfully.</p>
+
+    <% if (items && items.length === 1) { %>
+      <div class="product-summary">
+        <img src="<%= items[0].product.image %>" alt="<%= items[0].product.name %>" width="96" height="48">
+        <div>
+          <h2><%= items[0].product.name %></h2>
+          <% if (items[0].quantity > 1) { %>
+            <p style="margin:0;color:var(--ocean-mist);font-size:0.9rem;">Qty: <%= items[0].quantity %></p>
+          <% } %>
+          <p class="price">$<%= formatPrice(items[0].lineTotal) %></p>
+        </div>
+      </div>
+    <% } else if (items && items.length > 1) { %>
+      <div class="confirm-items">
+        <% items.forEach(function (item) { %>
+          <div class="product-summary product-summary-compact">
+            <img src="<%= item.product.image %>" alt="<%= item.product.name %>" width="64" height="32">
+            <div>
+              <h2><%= item.product.name %></h2>
+              <p style="margin:0;color:var(--ocean-mist);font-size:0.9rem;">
+                Qty: <%= item.quantity %> · $<%= formatPrice(item.lineTotal) %>
+              </p>
+            </div>
+          </div>
+        <% }) %>
+        <p class="confirm-total">
+          Order total: <strong class="price">$<%= formatPrice(total) %></strong>
+        </p>
+      </div>
+    <% } %>
+
+    <div class="contact-summary">
+      <p>
+        Email:
+        <strong><%= (typeof email !== 'undefined' && email) ? email : 'Not provided' %></strong>
+      </p>
+      <p>
+        Phone:
+        <strong><%= (typeof phone !== 'undefined' && phone) ? phone : 'Not provided' %></strong>
+      </p>
+    </div>
+
+    <div class="instructions">
+      <strong>Please follow these instructions</strong>
+      <ol>
+        <li>Copy your <strong>order ID</strong> below. You will need it for support or pickup.</li>
+        <li>If you left an email or phone number, watch for a follow-up from the store team.</li>
+        <li>Questions? Reference your order ID when you contact the store.</li>
+      </ol>
+    </div>
+
+    <div class="order-id-box">
+      <div class="label">Your order ID</div>
+      <div class="value" id="order-id-value"><%= orderId %></div>
+      <div class="save-it-wrap">
+        <button
+          type="button"
+          class="save-it-callout"
+          id="copy-order-id"
+          data-order-id="<%= orderId %>"
+          title="Click to copy order ID"
+        >SAVE IT</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a class="btn btn-primary" href="/">Back to shop</a>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var btn = document.getElementById("copy-order-id");
+      if (!btn) return;
+
+      var defaultLabel = "SAVE IT";
+      var orderId = btn.getAttribute("data-order-id") || "";
+
+      function flash(label) {
+        btn.textContent = label;
+        window.setTimeout(function () {
+          btn.textContent = defaultLabel;
+          btn.classList.remove("is-copied");
+        }, 1600);
+      }
+
+      function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+          var area = document.createElement("textarea");
+          area.value = text;
+          area.setAttribute("readonly", "");
+          area.style.position = "fixed";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          try {
+            document.execCommand("copy");
+            resolve();
+          } catch (err) {
+            reject(err);
+          } finally {
+            document.body.removeChild(area);
+          }
+        });
+      }
+
+      btn.addEventListener("click", function () {
+        copyText(orderId)
+          .then(function () {
+            btn.classList.add("is-copied");
+            flash("COPIED!");
+          })
+          .catch(function () {
+            flash("COPY FAILED");
+          });
+      });
+    })();
+  </script>
+
+<%- include('partials/footer') %>
