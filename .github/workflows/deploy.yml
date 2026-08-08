@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
 
 env:
-  HOST: 74.208.52.191
+  HOST: 74.208.35.191
   REMOTE_USER: root
   REMOTE_DIR: /web/ocean-market
   NODE_VERSION: "24"
