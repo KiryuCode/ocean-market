@@ -1,6 +1,9 @@
 # Deploy Ocean Market to the VPS over SSH.
 # Server: root@74.208.52.135  →  /web/ocean-market  (pm2: ocean-market, nginx → :3000)
 #
+# STATUS: DISABLED for now (job if: false). Re-enable by restoring the `on:`
+# triggers below and removing `if: false` on the deploy job.
+#
 # Required GitHub Actions secret:
 #   SSH_PRIVATE_KEY  — private key authorized for root@74.208.52.135
 #   (Settings → Secrets and variables → Actions → Secrets)
@@ -14,9 +17,11 @@
 
 name: Deploy
 
+# Disabled — no automatic deploy on push. workflow_dispatch kept only so the
+# workflow file stays valid; the job is still skipped via if: false.
 on:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
   workflow_dispatch:
 
 env:
@@ -27,6 +32,7 @@ env:
 
 jobs:
   deploy:
+    if: false # temporarily disabled — remove this line to re-enable
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
