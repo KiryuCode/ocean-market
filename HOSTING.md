@@ -376,14 +376,37 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
 # expect 503 briefly, then 200 once MySQL is up
 ```
 
-If you still see pidusage errors, clear a broken PM2 dump and recreate:
+### fnm + reboot (pid N/A / 502 bad gateway)
+
+If `pm2 status` shows **online** but **pid N/A** and **0b mem**, PM2 saved an
+ephemeral fnm path (`/run/user/0/fnm_multishells/...`) that vanishes after reboot.
+
+Fix once on the server:
 
 ```bash
-pm2 delete all
+STABLE_BIN=/root/.local/share/fnm/node-versions/v24.19.0/installation/bin   # adjust version
+ln -sfn "$STABLE_BIN/node" /usr/local/bin/node
+ln -sfn "$STABLE_BIN/npm"  /usr/local/bin/npm
+ln -sfn "$STABLE_BIN/pm2"  /usr/local/bin/pm2
+
+export PATH="$STABLE_BIN:/usr/local/bin:/usr/bin:/bin"
+unset FNM_MULTISHELL_PATH
 pm2 kill
 cd /var/www/ocean-market
-pm2 start ecosystem.config.cjs
+pm2 start ecosystem.config.cjs   # resolves stable interpreter
 pm2 save
+
+# systemd unit PATH must not include fnm_multishells
+sudo systemctl edit --full pm2-root   # or rewrite Environment=PATH=...
+sudo systemctl daemon-reload
+sudo systemctl enable --now pm2-root
+```
+
+Then reboot and confirm:
+
+```bash
+ss -lntp | grep 4840
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
 ```
 
 If logs show MySQL errors until success, retries are working. If PORT is wrong, confirm `.env` has `PORT=4840` next to `app.js`.

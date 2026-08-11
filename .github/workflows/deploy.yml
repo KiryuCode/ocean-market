@@ -213,7 +213,35 @@ jobs:
             echo "  npm i -g pm2 && pm2 -v"
             exit 1
           fi
-          echo "Using node=$(command -v node) ($(node -v)) npm=$(command -v npm) pm2=$(command -v pm2)"
+
+          # Resolve a STABLE node path (not /run/user/.../fnm_multishells/...).
+          # Ephemeral multishell bins vanish after reboot → PM2 "online" with pid N/A.
+          STABLE_NODE="$(readlink -f "$(command -v node)")"
+          if echo "$STABLE_NODE" | grep -q fnm_multishells; then
+            for cand in \
+              "$HOME/.local/share/fnm"/node-versions/v*/installation/bin/node \
+              /root/.local/share/fnm/node-versions/v*/installation/bin/node \
+              /usr/local/bin/node
+            do
+              if [ -x "$cand" ]; then
+                STABLE_NODE="$(readlink -f "$cand")"
+                break
+              fi
+            done
+          fi
+          STABLE_BIN="$(dirname "$STABLE_NODE")"
+          # Prefer stable bins for the rest of this script + for what PM2 dumps
+          export PATH="$STABLE_BIN:/usr/local/bin:/usr/bin:/bin"
+          unset FNM_MULTISHELL_PATH || true
+
+          # Keep /usr/local/bin symlinks so systemd/pm2 can find node after reboot
+          if [ -x "$STABLE_NODE" ]; then
+            ln -sfn "$STABLE_NODE" /usr/local/bin/node
+            [ -x "$STABLE_BIN/npm" ] && ln -sfn "$STABLE_BIN/npm" /usr/local/bin/npm
+            [ -x "$STABLE_BIN/pm2" ] && ln -sfn "$STABLE_BIN/pm2" /usr/local/bin/pm2
+          fi
+
+          echo "Using node=$STABLE_NODE ($("$STABLE_NODE" -v)) npm=$(command -v npm) pm2=$(command -v pm2)"
 
           cd "${REMOTE_DIR}"
 
@@ -227,7 +255,7 @@ jobs:
           npm ci --omit=dev
 
           echo "==> Restarting pm2 process: ocean-market"
-          # Prefer ecosystem.config.cjs so cwd is always the app directory after reboot
+          # Prefer ecosystem.config.cjs so cwd + stable interpreter survive reboot
           if [ -f ecosystem.config.cjs ]; then
             if pm2 describe ocean-market >/dev/null 2>&1; then
               pm2 delete ocean-market
@@ -237,11 +265,46 @@ jobs:
             pm2 restart ocean-market --update-env
           else
             # First-time boot (PORT from .env; nginx should proxy to that port)
-            # Prefer HOST=127.0.0.1 in .env when behind nginx
-            pm2 start app.js --name ocean-market
+            pm2 start app.js --name ocean-market --interpreter "$STABLE_NODE"
           fi
           pm2 save
           pm2 status ocean-market
+
+          # Ensure systemd unit PATH has no dead fnm multishell entries
+          if [ -f /etc/systemd/system/pm2-root.service ]; then
+            if grep -q fnm_multishells /etc/systemd/system/pm2-root.service 2>/dev/null; then
+              echo "==> Rewriting pm2-root.service PATH (remove ephemeral fnm multishell)"
+              STABLE_PM2="$(command -v pm2)"
+              cat > /etc/systemd/system/pm2-root.service <<UNIT
+[Unit]
+Description=PM2 process manager
+Documentation=https://pm2.keymetrics.io/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=root
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+Environment=PATH=${STABLE_BIN}:/usr/local/bin:/usr/bin:/bin
+Environment=PM2_HOME=/root/.pm2
+PIDFile=/root/.pm2/pm2.pid
+Restart=on-failure
+RestartSec=5
+
+ExecStart=${STABLE_PM2} resurrect
+ExecReload=${STABLE_PM2} reload all
+ExecStop=${STABLE_PM2} kill
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+              systemctl daemon-reload
+              systemctl enable pm2-root.service >/dev/null 2>&1 || true
+            fi
+          fi
 
           echo "==> Health check"
           # App port comes from server .env (defaults to 3000; this host uses e.g. 4840)

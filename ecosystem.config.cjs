@@ -1,37 +1,72 @@
 /**
- * Example PM2 process file for Ocean Market.
+ * PM2 process file for Ocean Market.
  *
- * Secrets and most settings come from .env (loaded by the app from __dirname).
- * Do not put passwords or SESSION_SECRET in this file.
+ * Secrets come from .env (loaded by the app from __dirname).
+ *
+ * Important for fnm hosts:
+ *   Do NOT rely on ephemeral multishell paths like
+ *   /run/user/0/fnm_multishells/... — they disappear after reboot and PM2
+ *   ends up "online" with pid N/A (502 bad gateway). This file resolves the
+ *   stable node binary under ~/.local/share/fnm/node-versions/...
  *
  * Install and run:
  *   npm i -g pm2
- *   cp .env.example .env   # if needed, then edit
- *   npm ci
- *   npm run db:init
+ *   # prefer stable PATH when saving the dump:
+ *   export PATH="$(dirname $(readlink -f $(which node))):/usr/local/bin:/usr/bin:/bin"
  *   pm2 start ecosystem.config.cjs
- *   pm2 status
- *   pm2 logs ocean-market
- *   pm2 save && pm2 startup   # survive reboots
- *
- * After reboot MySQL may start a few seconds after PM2; the app retries
- * DB connect before listening. Prefer also ordering MySQL before PM2:
- *   sudo systemctl edit pm2-root   # or pm2-$(whoami)
- *   [Unit]
- *   After=network-online.target mysql.service mysqld.service
- *   Wants=network-online.target
+ *   pm2 save && pm2 startup
  *
  * Update after deploy:
- *   pm2 restart ocean-market --update-env
- *
- * Stop / remove:
- *   pm2 stop ocean-market
- *   pm2 delete ocean-market
- *
- * Notes:
- * - Single fork instance (in-memory sessions).
- * - Prefer HOST=127.0.0.1 behind nginx; TRUST_PROXY + COOKIE_SECURE in .env.
+ *   pm2 delete ocean-market 2>/dev/null; pm2 start ecosystem.config.cjs; pm2 save
  */
+
+const fs = require("fs");
+const path = require("path");
+
+function resolveNodeInterpreter() {
+  const home = process.env.HOME || "/root";
+  const fnmDir = process.env.FNM_DIR || path.join(home, ".local/share/fnm");
+  const versionsDir = path.join(fnmDir, "node-versions");
+  try {
+    if (fs.existsSync(versionsDir)) {
+      const versions = fs
+        .readdirSync(versionsDir)
+        .filter((v) => v.startsWith("v"))
+        .sort();
+      for (let i = versions.length - 1; i >= 0; i -= 1) {
+        const nodePath = path.join(
+          versionsDir,
+          versions[i],
+          "installation",
+          "bin",
+          "node"
+        );
+        if (fs.existsSync(nodePath)) return nodePath;
+      }
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  // Prefer realpath so /usr/local/bin/node symlinks resolve to a real binary
+  for (const candidate of ["/usr/local/bin/node", "/usr/bin/node"]) {
+    try {
+      if (fs.existsSync(candidate)) return fs.realpathSync(candidate);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  try {
+    const real = fs.realpathSync(process.execPath);
+    // Avoid saving ephemeral fnm multishell paths into the PM2 dump
+    if (!real.includes("fnm_multishells")) return real;
+  } catch (_) {
+    /* ignore */
+  }
+  return "node";
+}
+
+const interpreter = resolveNodeInterpreter();
+const interpreterDir = path.dirname(interpreter);
 
 module.exports = {
   apps: [
@@ -39,6 +74,7 @@ module.exports = {
       name: "ocean-market",
       script: "app.js",
       cwd: __dirname,
+      interpreter,
 
       // Single process (in-memory sessions — do not use cluster without a shared store)
       instances: 1,
@@ -47,18 +83,17 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: "512M",
-      // Survive MySQL coming up late after reboot without exhausting restarts
       min_uptime: "10s",
       max_restarts: 40,
       restart_delay: 4000,
       exp_backoff_restart_delay: 1000,
 
-      // Defaults only; PORT / HOST / MYSQL_* / SMTP_* come from .env via dotenv
+      // Stable PATH only — never bake /run/user/.../fnm_multishells into the dump
       env: {
         NODE_ENV: "production",
+        PATH: `${interpreterDir}:/usr/local/bin:/usr/bin:/bin`,
       },
 
-      // Helpful when diagnosing reboot issues
       time: true,
     },
   ],
