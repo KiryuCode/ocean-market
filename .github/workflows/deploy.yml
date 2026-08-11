@@ -22,7 +22,7 @@ on:
 env:
   HOST: 74.208.35.191
   REMOTE_USER: root
-  REMOTE_DIR: /web/ocean-market
+  REMOTE_DIR: /var/www/ocean-market
   NODE_VERSION: "24"
 
 jobs:
