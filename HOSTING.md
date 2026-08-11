@@ -290,4 +290,43 @@ mysqldump -u ocean -p ocean > "backups/ocean-$(date +%F).sql"
 cd /path/to/ocean-market && NODE_ENV=production npm start
 ```
 
-Prefer **systemd** (or **pm2**: `npm i -g pm2 && pm2 start app.js --name ocean-market`) so the process survives logout and reboots.
+Prefer **systemd** (section 7) or **PM2** (below) so the process survives logout and reboots.
+
+---
+
+## Alternative: keep it running with PM2
+
+An example process file ships as [`ecosystem.config.cjs`](./ecosystem.config.cjs). It starts a single fork of `app.js` (do not cluster without a shared session store).
+
+```bash
+cd /path/to/ocean-market
+npm ci
+# ensure .env exists and MySQL is ready
+npm i -g pm2
+pm2 start ecosystem.config.cjs
+pm2 status
+pm2 logs ocean-market
+pm2 save
+pm2 startup   # follow the printed command (often needs sudo)
+```
+
+After an update:
+
+```bash
+cd /path/to/ocean-market
+# deploy new files, keep .env
+npm ci
+pm2 restart ocean-market
+```
+
+Useful commands:
+
+| Command | Purpose |
+|---------|---------|
+| `pm2 status` | List processes |
+| `pm2 logs ocean-market` | Tail logs |
+| `pm2 restart ocean-market` | Restart after deploy |
+| `pm2 stop ocean-market` | Stop without deleting |
+| `pm2 delete ocean-market` | Remove from PM2 |
+
+Still put **nginx** in front (section 8) with `HOST=127.0.0.1`, `TRUST_PROXY=true`, and `COOKIE_SECURE=true` in `.env` for HTTPS.

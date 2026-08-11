@@ -112,11 +112,23 @@ npm start
 npm run dev
 ```
 
+**Production with PM2** (process manager — auto-restart, logs, survives logout):
+
+```bash
+npm i -g pm2
+pm2 start ecosystem.config.cjs
+pm2 status
+pm2 logs ocean-market
+pm2 save && pm2 startup   # optional: start on reboot
+```
+
+An example process file is committed as [`ecosystem.config.cjs`](./ecosystem.config.cjs). It runs a single `app.js` fork (sessions are in-memory). Secrets and ports still come from `.env`.
+
 On first successful connect, the app ensures tables exist and seeds the default product catalog if `products` is empty.
 
 ### Deploy / production hosting
 
-See **[HOSTING.md](./HOSTING.md)** for remote server setup (zip upload, nginx, systemd, TLS).
+See **[HOSTING.md](./HOSTING.md)** for remote server setup (zip upload, nginx, systemd or PM2, TLS).
 
 Package a deploy zip (excludes `node_modules` and `.env`):
 

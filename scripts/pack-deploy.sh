@@ -13,7 +13,7 @@ echo "Staging files into $DEST ..."
 
 # App source
 cp -a app.js cart.js config.js db.js mail.js package.json package-lock.json \
-  README.md HOSTING.md .env.example .gitignore \
+  README.md HOSTING.md .env.example .gitignore ecosystem.config.cjs \
   "$DEST/"
 
 # MySQL bootstrap
