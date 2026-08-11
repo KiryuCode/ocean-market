@@ -59,6 +59,8 @@ function getPool() {
       database: cfg.database,
       waitForConnections: true,
       connectionLimit: 10,
+      // Fail fast when MySQL is still starting after reboot (app retries)
+      connectTimeout: 10000,
       namedPlaceholders: false,
       // Return DECIMAL/BIGINT as numbers where safe
       decimalNumbers: true,

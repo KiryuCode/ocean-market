@@ -316,7 +316,9 @@ After an update:
 cd /path/to/ocean-market
 # deploy new files, keep .env
 npm ci
-pm2 restart ocean-market
+pm2 restart ocean-market --update-env
+# Prefer the ecosystem file so cwd is always the app directory:
+# pm2 delete ocean-market && pm2 start ecosystem.config.cjs && pm2 save
 ```
 
 Useful commands:
@@ -328,5 +330,43 @@ Useful commands:
 | `pm2 restart ocean-market` | Restart after deploy |
 | `pm2 stop ocean-market` | Stop without deleting |
 | `pm2 delete ocean-market` | Remove from PM2 |
+
+### Reboot: PM2 online but curl to the app port fails
+
+Typical cause: **PM2 starts before MySQL** (or wrong cwd so `.env` / `PORT` is missing). The app only calls `listen()` after a successful DB init.
+
+The app now **retries MySQL for ~a few minutes** on boot. Still do this once on the server:
+
+```bash
+# 1) Start from the app dir with the ecosystem file (locks cwd)
+cd /var/www/ocean-market   # or your REMOTE_DIR
+pm2 delete ocean-market 2>/dev/null || true
+pm2 start ecosystem.config.cjs
+pm2 save
+
+# 2) Make PM2 wait for MySQL on boot (unit name is often pm2-root)
+sudo systemctl edit pm2-root
+```
+
+Add:
+
+```ini
+[Unit]
+After=network-online.target mysql.service mysqld.service
+Wants=network-online.target
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+# verify after reboot:
+pm2 status
+pm2 logs ocean-market --lines 50 --nostream
+ss -lntp | grep 4840    # or your PORT from .env
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/
+```
+
+If logs show MySQL errors until success, retries are working. If PORT is wrong, confirm `.env` has `PORT=4840` next to `app.js`.
 
 Still put **nginx** in front (section 8) with `HOST=127.0.0.1`, `TRUST_PROXY=true`, and `COOKIE_SECURE=true` in `.env` for HTTPS.

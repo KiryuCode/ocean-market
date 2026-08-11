@@ -115,6 +115,7 @@ jobs:
             mail.js \
             package.json \
             package-lock.json \
+            ecosystem.config.cjs \
             .env.example \
             views \
             public \
@@ -226,7 +227,13 @@ jobs:
           npm ci --omit=dev
 
           echo "==> Restarting pm2 process: ocean-market"
-          if pm2 describe ocean-market >/dev/null 2>&1; then
+          # Prefer ecosystem.config.cjs so cwd is always the app directory after reboot
+          if [ -f ecosystem.config.cjs ]; then
+            if pm2 describe ocean-market >/dev/null 2>&1; then
+              pm2 delete ocean-market
+            fi
+            pm2 start ecosystem.config.cjs
+          elif pm2 describe ocean-market >/dev/null 2>&1; then
             pm2 restart ocean-market --update-env
           else
             # First-time boot (PORT from .env; nginx should proxy to that port)

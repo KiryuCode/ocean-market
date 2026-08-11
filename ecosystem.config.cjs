@@ -1,7 +1,7 @@
 /**
  * Example PM2 process file for Ocean Market.
  *
- * Secrets and most settings come from `.env` (loaded by the app via dotenv).
+ * Secrets and most settings come from .env (loaded by the app from __dirname).
  * Do not put passwords or SESSION_SECRET in this file.
  *
  * Install and run:
@@ -14,18 +14,23 @@
  *   pm2 logs ocean-market
  *   pm2 save && pm2 startup   # survive reboots
  *
+ * After reboot MySQL may start a few seconds after PM2; the app retries
+ * DB connect before listening. Prefer also ordering MySQL before PM2:
+ *   sudo systemctl edit pm2-root   # or pm2-$(whoami)
+ *   [Unit]
+ *   After=network-online.target mysql.service mysqld.service
+ *   Wants=network-online.target
+ *
  * Update after deploy:
- *   pm2 restart ocean-market
- *   # or: pm2 reload ecosystem.config.cjs
+ *   pm2 restart ocean-market --update-env
  *
  * Stop / remove:
  *   pm2 stop ocean-market
  *   pm2 delete ocean-market
  *
  * Notes:
- * - Use a single fork instance. Sessions are in-memory (express-session);
- *   clustering needs a shared session store and sticky load balancing.
- * - Prefer HOST=127.0.0.1 behind nginx; set TRUST_PROXY and COOKIE_SECURE in .env.
+ * - Single fork instance (in-memory sessions).
+ * - Prefer HOST=127.0.0.1 behind nginx; TRUST_PROXY + COOKIE_SECURE in .env.
  */
 
 module.exports = {
@@ -42,20 +47,19 @@ module.exports = {
       autorestart: true,
       watch: false,
       max_memory_restart: "512M",
+      // Survive MySQL coming up late after reboot without exhausting restarts
       min_uptime: "10s",
-      max_restarts: 20,
-      restart_delay: 3000,
+      max_restarts: 40,
+      restart_delay: 4000,
+      exp_backoff_restart_delay: 1000,
 
-      // Defaults only; override via .env (PORT, HOST, MYSQL_*, SMTP_*, etc.)
+      // Defaults only; PORT / HOST / MYSQL_* / SMTP_* come from .env via dotenv
       env: {
         NODE_ENV: "production",
       },
 
-      // Optional: separate log files under ./logs (create dir if missing)
-      // error_file: "./logs/pm2-error.log",
-      // out_file: "./logs/pm2-out.log",
-      // merge_logs: true,
-      // time: true,
+      // Helpful when diagnosing reboot issues
+      time: true,
     },
   ],
 };

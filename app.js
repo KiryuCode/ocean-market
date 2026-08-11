@@ -10,10 +10,12 @@
  * Admin: http://127.0.0.1:3000/admin?key=ocean-admin-2024
  */
 
-require("dotenv").config();
-
 const fs = require("fs");
 const path = require("path");
+
+// Always load .env next to this file (PM2/systemd cwd can differ after reboot)
+require("dotenv").config({ path: path.join(__dirname, ".env") });
+
 const express = require("express");
 const session = require("express-session");
 const multer = require("multer");
@@ -623,6 +625,41 @@ app.use((err, _req, res, _next) => {
   res.status(500).send("Internal Server Error");
 });
 
+/**
+ * Wait for MySQL after reboot (PM2 often starts before mysqld is ready).
+ * Retries with backoff, then exits so PM2 can try again.
+ */
+async function initDbWithRetry(options = {}) {
+  const maxAttempts = Number(options.maxAttempts) || 30;
+  const baseDelayMs = Number(options.baseDelayMs) || 2000;
+  const maxDelayMs = Number(options.maxDelayMs) || 15000;
+  let lastErr;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await db.initDb();
+      if (attempt > 1) {
+        console.log(`[db] Connected to MySQL on attempt ${attempt}`);
+      }
+      return;
+    } catch (err) {
+      lastErr = err;
+      const delay = Math.min(baseDelayMs * attempt, maxDelayMs);
+      console.error(
+        `[db] MySQL not ready (attempt ${attempt}/${maxAttempts}): ${
+          err.message || err
+        }`
+      );
+      if (attempt < maxAttempts) {
+        console.error(`[db] Retrying in ${Math.round(delay / 1000)}s…`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
+  throw lastErr;
+}
+
 async function start() {
   if (
     isProd &&
@@ -634,12 +671,16 @@ async function start() {
     );
   }
 
+  console.log(
+    `[boot] cwd=${process.cwd()} __dirname=${__dirname} PORT=${PORT} HOST=${HOST}`
+  );
+
   try {
-    await db.initDb();
+    await initDbWithRetry();
   } catch (err) {
     console.error(
       "[fatal] Could not connect to MySQL or initialize schema.",
-      "Check MYSQL_* in .env and that ocean exists (scripts/init-ocean.sql)."
+      "Check MYSQL_* in .env, that MySQL is running, and that the database exists."
     );
     console.error(err.message || err);
     process.exit(1);
