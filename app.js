@@ -108,6 +108,33 @@ app.use((req, res, next) => {
   next();
 });
 
+// Ready only after MySQL init. Bind HTTP first so PM2 always has a live PID
+// (avoids "pidusage … pids provided is invalid" when the process exits on boot).
+let appReady = false;
+
+app.get("/healthz", (_req, res) => {
+  if (appReady) {
+    return res.status(200).json({ ok: true });
+  }
+  return res.status(503).json({ ok: false, reason: "starting" });
+});
+
+app.use((req, res, next) => {
+  if (appReady) return next();
+  // Static assets already handled above; gate app routes until DB is ready
+  res.set("Retry-After", "5");
+  if (req.accepts("html")) {
+    return res
+      .status(503)
+      .type("html")
+      .send(
+        "<!doctype html><meta charset=utf-8><title>Starting</title>" +
+          "<p>Ocean Market is starting up. Please retry in a few seconds.</p>"
+      );
+  }
+  return res.status(503).type("text").send("Service starting, please retry shortly.\n");
+});
+
 // ---------------------------------------------------------------------------
 // SEO: robots.txt + sitemap.xml
 // ---------------------------------------------------------------------------
@@ -627,15 +654,16 @@ app.use((err, _req, res, _next) => {
 
 /**
  * Wait for MySQL after reboot (PM2 often starts before mysqld is ready).
- * Retries with backoff, then exits so PM2 can try again.
+ * Retries with backoff. Keeps the HTTP process alive so PM2 has a valid PID.
  */
 async function initDbWithRetry(options = {}) {
-  const maxAttempts = Number(options.maxAttempts) || 30;
+  const maxAttempts = Number(options.maxAttempts) || 0; // 0 = forever
   const baseDelayMs = Number(options.baseDelayMs) || 2000;
   const maxDelayMs = Number(options.maxDelayMs) || 15000;
-  let lastErr;
+  let attempt = 0;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  for (;;) {
+    attempt += 1;
     try {
       await db.initDb();
       if (attempt > 1) {
@@ -643,21 +671,19 @@ async function initDbWithRetry(options = {}) {
       }
       return;
     } catch (err) {
-      lastErr = err;
-      const delay = Math.min(baseDelayMs * attempt, maxDelayMs);
+      const delay = Math.min(baseDelayMs * Math.min(attempt, 10), maxDelayMs);
       console.error(
-        `[db] MySQL not ready (attempt ${attempt}/${maxAttempts}): ${
-          err.message || err
-        }`
+        `[db] MySQL not ready (attempt ${attempt}${
+          maxAttempts ? `/${maxAttempts}` : ""
+        }): ${err.message || err}`
       );
-      if (attempt < maxAttempts) {
-        console.error(`[db] Retrying in ${Math.round(delay / 1000)}s…`);
-        await new Promise((r) => setTimeout(r, delay));
+      if (maxAttempts > 0 && attempt >= maxAttempts) {
+        throw err;
       }
+      console.error(`[db] Retrying in ${Math.round(delay / 1000)}s…`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
-
-  throw lastErr;
 }
 
 async function start() {
@@ -675,9 +701,28 @@ async function start() {
     `[boot] cwd=${process.cwd()} __dirname=${__dirname} PORT=${PORT} HOST=${HOST}`
   );
 
+  // Bind first so the process stays alive during MySQL wait (valid PM2 PID).
+  await new Promise((resolve, reject) => {
+    const server = app.listen(PORT, HOST, () => {
+      const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
+      console.log(
+        `${STORE_NAME} listening at http://${displayHost}:${PORT} (bind ${HOST}) — waiting for MySQL`
+      );
+      resolve(server);
+    });
+    server.on("error", reject);
+  });
+
   try {
     await initDbWithRetry();
+    appReady = true;
+    const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
+    console.log(`${STORE_NAME} ready at http://${displayHost}:${PORT}`);
+    console.log(
+      `Admin: http://${displayHost}:${PORT}/admin?key=${ADMIN_KEY}`
+    );
   } catch (err) {
+    // Only reached if maxAttempts is set; default is infinite retry.
     console.error(
       "[fatal] Could not connect to MySQL or initialize schema.",
       "Check MYSQL_* in .env, that MySQL is running, and that the database exists."
@@ -685,16 +730,6 @@ async function start() {
     console.error(err.message || err);
     process.exit(1);
   }
-
-  app.listen(PORT, HOST, () => {
-    const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
-    console.log(
-      `${STORE_NAME} running at http://${displayHost}:${PORT} (bind ${HOST})`
-    );
-    console.log(
-      `Admin: http://${displayHost}:${PORT}/admin?key=${ADMIN_KEY}`
-    );
-  });
 }
 
 if (require.main === module) {

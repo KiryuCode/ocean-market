@@ -252,15 +252,15 @@ jobs:
               APP_PORT="$ENV_PORT"
             fi
           fi
-          HEALTH_URL="http://127.0.0.1:${APP_PORT}/"
+          # /healthz is 200 only when MySQL init finished; port binds earlier (503 while starting)
+          HEALTH_URL="http://127.0.0.1:${APP_PORT}/healthz"
           echo "Checking ${HEALTH_URL}"
-          # Allow a few seconds for MySQL connect + listen after pm2 restart
           ok=0
-          for i in 1 2 3 4 5 6; do
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             sleep 2
             code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 5 "$HEALTH_URL" || true)"
             echo "  attempt ${i}: HTTP ${code:-000}"
-            if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ] || [ "$code" = "304" ]; then
+            if [ "$code" = "200" ]; then
               ok=1
               break
             fi

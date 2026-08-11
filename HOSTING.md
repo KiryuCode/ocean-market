@@ -331,11 +331,19 @@ Useful commands:
 | `pm2 stop ocean-market` | Stop without deleting |
 | `pm2 delete ocean-market` | Remove from PM2 |
 
-### Reboot: PM2 online but curl to the app port fails
+### Reboot: PM2 online but curl fails / `pidusage` invalid PID
 
-Typical cause: **PM2 starts before MySQL** (or wrong cwd so `.env` / `PORT` is missing). The app only calls `listen()` after a successful DB init.
+`PM2 | Error caught while calling pidusage … One of the pids provided is invalid` means the **Node process already exited** (usually right after boot). PM2 still tries to sample a dead PID — that log is a symptom, not the root cause.
 
-The app now **retries MySQL for ~a few minutes** on boot. Still do this once on the server:
+Typical root cause: **PM2 starts before MySQL**, the app used to `process.exit(1)` before binding a port, so `curl` got connection refused.
+
+Current behavior:
+
+1. HTTP **binds immediately** on `PORT` (valid PM2 PID → no pidusage spam)
+2. `/healthz` returns **503** until MySQL init succeeds, then **200**
+3. Other routes return **503** while starting; MySQL is retried forever with backoff
+
+Still do this once on the server:
 
 ```bash
 # 1) Start from the app dir with the ecosystem file (locks cwd)
@@ -364,7 +372,18 @@ sudo systemctl daemon-reload
 pm2 status
 pm2 logs ocean-market --lines 50 --nostream
 ss -lntp | grep 4840    # or your PORT from .env
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
+# expect 503 briefly, then 200 once MySQL is up
+```
+
+If you still see pidusage errors, clear a broken PM2 dump and recreate:
+
+```bash
+pm2 delete all
+pm2 kill
+cd /var/www/ocean-market
+pm2 start ecosystem.config.cjs
+pm2 save
 ```
 
 If logs show MySQL errors until success, retries are working. If PORT is wrong, confirm `.env` has `PORT=4840` next to `app.js`.
