@@ -112,23 +112,19 @@ npm start
 npm run dev
 ```
 
-**Production with PM2** (process manager — auto-restart, logs, survives logout):
+**Docker** (production path — same image the VPS runs):
 
 ```bash
-npm i -g pm2
-pm2 start ecosystem.config.cjs
-pm2 status
-pm2 logs ocean-market
-pm2 save && pm2 startup   # optional: start on reboot
+cp .env.example .env
+# set MYSQL_* and SESSION_SECRET
+docker compose up --build
 ```
-
-An example process file is committed as [`ecosystem.config.cjs`](./ecosystem.config.cjs). It runs a single `app.js` fork (sessions are in-memory). Secrets and ports still come from `.env`.
 
 On first successful connect, the app ensures tables exist and seeds the default product catalog if `products` is empty.
 
 ### Deploy / production hosting
 
-See **[HOSTING.md](./HOSTING.md)** for remote server setup (zip upload, nginx, systemd or PM2, TLS).
+See **[HOSTING.md](./HOSTING.md)** for remote server setup (Docker Compose, nginx, TLS). Push to `main` to deploy via `.github/workflows/deploy.yml`.
 
 Package a deploy zip (excludes `node_modules` and `.env`):
 
@@ -421,9 +417,12 @@ ocean-admin-2024
 ├── db.js                  # MySQL pool, schema ensure, products, orders, IP limits
 ├── .env.example           # MySQL + SMTP + SITE_URL template (copy to .env)
 ├── package.json
+├── Dockerfile             # Production Node image
+├── docker-compose.yml     # App container; publishes HOST_BIND:PORT
 ├── scripts/
 │   ├── init-db.js          # npm run db:init — bootstrap from MYSQL_* in .env
 │   ├── init-ocean.sql      # Static local SQL fallback (CREATE DATABASE/user/tables)
+│   ├── deploy.sh           # SSH / rsync + docker compose
 │   └── pack-deploy.sh     # Deploy zip builder
 ├── public/
 │   ├── css/style.css      # Storefront styles
@@ -452,6 +451,7 @@ Public SEO endpoints (no login): `/robots.txt`, `/sitemap.xml`.
 | `npm run dev`   | Start with Node’s `--watch` for live reload |
 | `npm run db:init` | Bootstrap DB + tables using `MYSQL_*` from `.env` (`scripts/init-db.js`) |
 | `npm run pack`  | Build `ocean-market-deploy.zip` |
+| `docker compose up --build` | Build and run the production container |
 
 ---
 

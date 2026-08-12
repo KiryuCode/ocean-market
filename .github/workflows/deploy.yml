@@ -1,16 +1,17 @@
-# Deploy Ocean Market to the VPS over SSH.
-# Server: root@74.208.52.191  →  /web/ocean-market  (pm2: ocean-market, nginx → :3000)
+# Deploy Ocean Market to the VPS over SSH as a Docker Compose stack.
+# Server: root@74.208.35.191  →  /var/www/ocean-market
+# Published as 127.0.0.1:${PORT} (this host uses 4840); nginx (adavis.shop) reverse-proxies to it.
 #
 # Required GitHub Actions secret:
-#   SSH_PRIVATE_KEY  — private key authorized for root@74.208.52.191
+#   SSH_PRIVATE_KEY  — private key authorized for root@74.208.35.191
 #   (Settings → Secrets and variables → Actions → Secrets)
 #
 # Paste the full PEM including BEGIN/END lines. If libcrypto errors persist,
 # store base64 instead: base64 -w0 < /path/to/private_key
 #
 # On the server, create once and leave in place:
-#   /web/ocean-market/.env   (see .env.example / HOSTING.md)
-#   MySQL database via scripts/init-mydb.sql
+#   /var/www/ocean-market/.env              (see .env.example / HOSTING.md)
+#   /var/www/ocean-market/public/uploads    (product photos)
 
 name: Deploy
 
@@ -23,7 +24,6 @@ env:
   HOST: 74.208.35.191
   REMOTE_USER: root
   REMOTE_DIR: /var/www/ocean-market
-  NODE_VERSION: "24"
 
 jobs:
   deploy:
@@ -31,15 +31,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install (CI smoke check)
-        run: npm ci
 
       - name: Configure SSH
         env:
@@ -68,19 +59,19 @@ jobs:
           if [ "$decoded" -eq 0 ]; then
             printf '%s' "$SSH_PRIVATE_KEY" | sed 's/\r$//' > ~/.ssh/deploy_key
             if ! grep -qE 'BEGIN .*PRIVATE KEY' ~/.ssh/deploy_key; then
-              # literal backslash-n sequences
               printf '%s' "$SSH_PRIVATE_KEY" | sed 's/\r//g; s/\\n/\n/g' > ~/.ssh/deploy_key
             fi
             echo "Loaded SSH key as PEM text"
           fi
 
           # OpenSSH requires a trailing newline
-          if [ -s ~/.ssh/deploy_key ] && [ "$(tail -c1 ~/.ssh/deploy_key | wc -l)" -eq 0 ]; then
-            echo >> ~/.ssh/deploy_key
+          if [ -s ~/.ssh/deploy_key ] && [ "$(tail -c1 ~/.ssh/deploy_key | wc -c)" -ne 0 ]; then
+            if [ "$(tail -c1 ~/.ssh/deploy_key | wc -l)" -eq 0 ]; then
+              echo >> ~/.ssh/deploy_key
+            fi
           fi
           chmod 600 ~/.ssh/deploy_key
 
-          # Fail early with a clear message (do not print key material)
           if ! ssh-keygen -y -f ~/.ssh/deploy_key >/dev/null 2>&1; then
             echo "ERROR: deploy_key is not a valid SSH private key (would cause libcrypto error)."
             echo "  size:  $(wc -c < ~/.ssh/deploy_key) bytes"
@@ -95,180 +86,7 @@ jobs:
 
           ssh-keyscan -H "${{ env.HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Rsync app to server
-        run: |
-          # Never overwrite .env, node_modules, or product uploads on the server
-          rsync -avz \
-            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
-            --exclude node_modules \
-            --exclude .env \
-            --exclude .git \
-            --exclude .github \
-            --exclude local.db \
-            --exclude local.db-shm \
-            --exclude local.db-wal \
-            --exclude public/uploads \
-            app.js \
-            cart.js \
-            config.js \
-            db.js \
-            mail.js \
-            package.json \
-            package-lock.json \
-            ecosystem.config.cjs \
-            .env.example \
-            views \
-            public \
-            scripts \
-            "${{ env.REMOTE_USER }}@${{ env.HOST }}:${{ env.REMOTE_DIR }}/"
-
-      - name: Install and restart on server
-        run: |
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes \
-            "${{ env.REMOTE_USER }}@${{ env.HOST }}" \
-            REMOTE_DIR='${{ env.REMOTE_DIR }}' \
-            NODE_VERSION='${{ env.NODE_VERSION }}' \
-            bash -s <<'EOF'
-          set -euo pipefail
-
-          # Non-interactive SSH skips .bashrc — load fnm / nvm / Node into PATH.
-          export PATH="/usr/local/bin:/usr/bin:$HOME/.local/bin:$PATH"
-
-          # --- fnm (Fast Node Manager) ---
-          # Binary often lives in ~/.local/share/fnm or ~/.fnm; env sets PATH to node.
-          for d in \
-            "${FNM_PATH:-}" \
-            "$HOME/.local/share/fnm" \
-            "$HOME/.fnm" \
-            /root/.local/share/fnm \
-            /root/.fnm
-          do
-            [ -n "$d" ] && [ -d "$d" ] && export PATH="$d:$PATH"
-          done
-          if command -v fnm >/dev/null 2>&1; then
-            # shellcheck disable=SC1091
-            eval "$(fnm env --shell bash)"
-            # Prefer default alias, then current, then any installed version
-            fnm use default >/dev/null 2>&1 \
-              || fnm use "${NODE_VERSION:-24}" >/dev/null 2>&1 \
-              || fnm use >/dev/null 2>&1 \
-              || true
-          fi
-          # Fallback: newest fnm node-versions bin dir
-          if ! command -v npm >/dev/null 2>&1; then
-            for FNM_ROOT in "$HOME/.local/share/fnm" "$HOME/.fnm" /root/.local/share/fnm /root/.fnm; do
-              if [ -d "$FNM_ROOT/node-versions" ]; then
-                LATEST_FNM_BIN="$(ls -d "$FNM_ROOT"/node-versions/v*/installation/bin 2>/dev/null | sort -V | tail -1 || true)"
-                if [ -n "${LATEST_FNM_BIN:-}" ]; then
-                  export PATH="$LATEST_FNM_BIN:$PATH"
-                  break
-                fi
-              fi
-            done
-          fi
-
-          # --- nvm ---
-          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-          if [ ! -s "$NVM_DIR/nvm.sh" ] && [ -s /root/.nvm/nvm.sh ]; then
-            NVM_DIR=/root/.nvm
-          fi
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            # shellcheck disable=SC1091
-            . "$NVM_DIR/nvm.sh"
-            nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1 || true
-          fi
-          if ! command -v npm >/dev/null 2>&1 && [ -d "$NVM_DIR/versions/node" ]; then
-            LATEST_NODE_BIN="$(ls -d "$NVM_DIR"/versions/node/v*/bin 2>/dev/null | sort -V | tail -1 || true)"
-            if [ -n "${LATEST_NODE_BIN:-}" ]; then
-              export PATH="$LATEST_NODE_BIN:$PATH"
-            fi
-          fi
-
-          # Other common locations (apt, snap, official tarball)
-          for d in /usr/local/node/bin /snap/bin; do
-            [ -d "$d" ] && export PATH="$d:$PATH"
-          done
-
-          if ! command -v npm >/dev/null 2>&1; then
-            echo "ERROR: npm not found on the server (non-interactive PATH)."
-            echo "This host uses fnm or nvm; neither put npm on PATH. Install Node once, e.g.:"
-            echo ""
-            echo "  # fnm (recommended if already using it interactively)"
-            echo "  curl -fsSL https://fnm.vercel.app/install | bash"
-            echo "  # re-login or: export PATH=\"\$HOME/.local/share/fnm:\$PATH\" && eval \"\$(fnm env)\""
-            echo "  fnm install 24 && fnm default 24"
-            echo "  npm i -g pm2"
-            echo ""
-            echo "  # or nvm"
-            echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
-            echo "  . ~/.nvm/nvm.sh && nvm install 24 && nvm alias default 24"
-            echo "  npm i -g pm2"
-            echo ""
-            echo "Then from a non-login shell: which node npm pm2 && node -v"
-            exit 1
-          fi
-          if ! command -v pm2 >/dev/null 2>&1; then
-            echo "ERROR: pm2 not found on PATH. Install once (with fnm/nvm loaded):"
-            echo "  eval \"\$(fnm env)\"  # or: . \"\$NVM_DIR/nvm.sh\""
-            echo "  npm i -g pm2 && pm2 -v"
-            exit 1
-          fi
-          echo "Using node=$(command -v node) ($(node -v)) npm=$(command -v npm) pm2=$(command -v pm2)"
-
-          cd "${REMOTE_DIR}"
-
-          mkdir -p public/uploads/products
-
-          if [ ! -f .env ]; then
-            echo "WARNING: .env missing in ${REMOTE_DIR} — copy from .env.example before first use"
-          fi
-
-          echo "==> Installing dependencies"
-          npm ci --omit=dev
-
-          echo "==> Restarting pm2 process: ocean-market"
-          # Prefer ecosystem.config.cjs so cwd is always the app directory after reboot
-          if [ -f ecosystem.config.cjs ]; then
-            if pm2 describe ocean-market >/dev/null 2>&1; then
-              pm2 delete ocean-market
-            fi
-            pm2 start ecosystem.config.cjs
-          elif pm2 describe ocean-market >/dev/null 2>&1; then
-            pm2 restart ocean-market --update-env
-          else
-            # First-time boot (PORT from .env; nginx should proxy to that port)
-            # Prefer HOST=127.0.0.1 in .env when behind nginx
-            pm2 start app.js --name ocean-market
-          fi
-          pm2 save
-          pm2 status ocean-market
-
-          echo "==> Health check"
-          # App port comes from server .env (defaults to 3000; this host uses e.g. 4840)
-          APP_PORT=3000
-          if [ -f .env ]; then
-            ENV_PORT="$(grep -E '^[[:space:]]*PORT=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]' | tr -d \"\' || true)"
-            if [ -n "${ENV_PORT:-}" ] && [[ "$ENV_PORT" =~ ^[0-9]+$ ]]; then
-              APP_PORT="$ENV_PORT"
-            fi
-          fi
-          # /healthz is 200 only when MySQL init finished; port binds earlier (503 while starting)
-          HEALTH_URL="http://127.0.0.1:${APP_PORT}/healthz"
-          echo "Checking ${HEALTH_URL}"
-          ok=0
-          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-            sleep 2
-            code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 5 "$HEALTH_URL" || true)"
-            echo "  attempt ${i}: HTTP ${code:-000}"
-            if [ "$code" = "200" ]; then
-              ok=1
-              break
-            fi
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo "Health check failed against ${HEALTH_URL} — recent logs:"
-            pm2 logs ocean-market --lines 40 --nostream
-            exit 1
-          fi
-          echo "Deploy complete."
-          EOF
+      - name: Deploy
+        env:
+          SSH_KEY: /home/runner/.ssh/deploy_key
+        run: bash scripts/deploy.sh

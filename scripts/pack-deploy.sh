@@ -13,12 +13,14 @@ echo "Staging files into $DEST ..."
 
 # App source
 cp -a app.js cart.js config.js db.js mail.js package.json package-lock.json \
-  README.md HOSTING.md .env.example .gitignore ecosystem.config.cjs \
+  README.md HOSTING.md .env.example .gitignore \
+  Dockerfile docker-compose.yml .dockerignore \
   "$DEST/"
 
 # MySQL bootstrap
 mkdir -p "$DEST/scripts"
-cp -a scripts/init-db.js scripts/init-ocean.sql scripts/pack-deploy.sh "$DEST/scripts/" 2>/dev/null || true
+cp -a scripts/init-db.js scripts/init-ocean.sql scripts/pack-deploy.sh scripts/deploy.sh \
+  "$DEST/scripts/" 2>/dev/null || true
 if [[ -f scripts/init-db.js ]]; then
   echo "  + scripts/init-db.js"
 fi

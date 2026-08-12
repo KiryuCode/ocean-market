@@ -1,6 +1,13 @@
 # Hosting Ocean Market (production)
 
-This is a **Node.js + Express + MySQL** app. There is no separate frontend build step — you install dependencies on the server and run `npm start`.
+This is a **Node.js + Express + MySQL** app packaged as a **Docker Compose** stack. There is no separate frontend build step. GitHub Actions rsyncs the tree and runs `docker compose up --build -d` on the VPS.
+
+Production today:
+
+- VPS `root@74.208.35.191` → `/var/www/ocean-market`
+- Container published as `127.0.0.1:4840` (`HOST_BIND=127.0.0.1`, `PORT=4840`)
+- nginx (`adavis.shop`) reverse-proxies to that loopback port
+- MySQL is the Aiven host in the server `.env` (not a container)
 
 ---
 
@@ -9,8 +16,9 @@ This is a **Node.js + Express + MySQL** app. There is no separate frontend build
 | Include | Notes |
 |---------|--------|
 | App source (`app.js`, `mail.js`, `db.js`, …) | Yes |
+| `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Yes |
 | `views/`, `public/` (CSS, JS, product images) | Yes |
-| `package.json` + `package-lock.json` | Yes — run `npm ci` / `npm install` **on the server** |
+| `package.json` + `package-lock.json` | Yes — `npm ci` runs **inside the image** |
 | `scripts/init-ocean.sql` | Database bootstrap for `ocean` |
 | `.env.example` | Template — **create `.env` on the server** |
 | `node_modules/` | **Not** in the zip |
@@ -21,10 +29,12 @@ This is a **Node.js + Express + MySQL** app. There is no separate frontend build
 ## Server requirements
 
 - **Linux** VPS or similar (Ubuntu 22.04+ is fine)
-- **Node.js 18+** (20 LTS recommended)
-- **MySQL 8.4** (or 8.0+) on the same host or a reachable DB host
+- **Docker Engine** + **Compose v2** (`docker.io` and `docker-compose-v2` on Ubuntu)
+- **MySQL 8.4** (or 8.0+) reachable from the container (local, or a managed host such as Aiven)
 - Outbound SMTP (port **587** or **465**) if you want order emails
 - Optional but recommended: **nginx** (or Caddy) as reverse proxy + TLS
+
+You do **not** need Node.js, fnm, nvm, or PM2 on the host.
 
 ---
 
@@ -42,47 +52,44 @@ cd ocean-market
 
 Or upload via SFTP/FileZilla into e.g. `/var/www/ocean-market`.
 
+The GitHub Actions workflow (`.github/workflows/deploy.yml`) rsyncs the same files and runs [`scripts/deploy.sh`](./scripts/deploy.sh).
+
 ---
 
-## 2. Install Node.js (if needed)
+## 2. Install Docker (if needed)
 
 ```bash
-# Example: Node 20 via NodeSource (Ubuntu)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-node -v   # should be v18+
+sudo apt update
+sudo apt install -y docker.io docker-compose-v2
+sudo systemctl enable --now docker
+docker --version
+docker compose version
 ```
 
+Skip the snap package — snap confinement often breaks bind mounts for `.env` and `public/uploads`.
+
 ---
 
-## 3. Install MySQL and create `ocean`
+## 3. Create the MySQL database
 
-Install MySQL 8.4 on the server (see README for full APT steps), then:
+Managed MySQL (Aiven, etc.): create the `ocean` database in the provider UI, then run from a machine that can reach it:
 
 ```bash
-cd /path/to/ocean-market
+# uses MYSQL_* from .env
+npm run db:init
+```
+
+Or apply the static local script (localhost MySQL only):
+
+```bash
 sudo mysql < scripts/init-ocean.sql
-# or: mysql -u root -p < scripts/init-ocean.sql
 ```
 
-That creates database **`ocean`**, user **`ocean`** / password **`ocean_pass`**, and empty tables.  
-**Change the password** for production (update both MySQL and `.env`).
+The app also ensures tables exist on startup. **Change the password** for production (update both MySQL and `.env`).
 
 ---
 
-## 4. Install app dependencies
-
-**Always install on the server** (not by copying `node_modules`):
-
-```bash
-cd /path/to/ocean-market
-npm ci
-# or: npm install --omit=dev
-```
-
----
-
-## 5. Create `.env` for production
+## 4. Create `.env` for production
 
 ```bash
 cp .env.example .env
@@ -93,20 +100,21 @@ Minimum production settings:
 
 ```env
 NODE_ENV=production
-PORT=3000
-HOST=127.0.0.1
+PORT=4840
+HOST=0.0.0.0
+HOST_BIND=127.0.0.1
 SESSION_SECRET=paste-a-long-random-string-here
 
 TRUST_PROXY=true
 COOKIE_SECURE=true
+SITE_URL=https://adavis.shop
 
-MYSQL_HOST=127.0.0.1
+MYSQL_HOST=your-mysql-host.example.com
 MYSQL_PORT=3306
 MYSQL_USER=ocean
 MYSQL_PASSWORD=your-strong-db-password
 MYSQL_DATABASE=ocean
-# Set true when MySQL requires or should use TLS (remote hosts, managed DBs)
-MYSQL_SSL=false
+MYSQL_SSL=true
 
 EMAIL_TO=andrew.davis64@gmail.com
 SMTP_HOST=smtp.gmail.com
@@ -120,74 +128,31 @@ SMTP_FROM="Ocean Market <your-gmail@gmail.com>"
 Notes:
 
 - Generate `SESSION_SECRET` with: `openssl rand -hex 32`
-- Use `HOST=127.0.0.1` when nginx proxies to the app on the same machine
-- Use `HOST=0.0.0.0` only if you expose Node directly (not recommended without a firewall)
+- `HOST_BIND=127.0.0.1` keeps the published port on loopback; nginx is the public entry
+- Compose overrides `HOST=0.0.0.0` inside the container so the published port works
 - Gmail app passwords: spaces optional; without spaces is simplest in `.env`
 - Change `ADMIN_KEY` in `config.js` (or plan to) before going live — default is `ocean-admin-2024`
 
 ---
 
-## 6. Test run
+## 5. Start the stack
 
 ```bash
-npm start
+mkdir -p public/uploads/products
+# container runs as uid 1000 (node)
+sudo chown -R 1000:1000 public/uploads
+docker compose up --build -d
+docker compose ps
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
 ```
 
-You should see something like:
+`/healthz` is **503** until MySQL init succeeds, then **200**.
 
-```text
-Ocean Market running at http://127.0.0.1:3000 (bind 127.0.0.1)
-```
-
-Visit `http://YOUR_SERVER_IP:3000` only if `HOST=0.0.0.0` and the firewall allows it. Prefer nginx (next step).
-
-Stop with `Ctrl+C` after a smoke test.
+Local (no nginx): leave `HOST_BIND` unset (or `0.0.0.0`), set `PORT=3000`, and open http://127.0.0.1:3000.
 
 ---
 
-## 7. Keep it running (systemd)
-
-```bash
-sudo nano /etc/systemd/system/ocean-market.service
-```
-
-```ini
-[Unit]
-Description=Ocean Market webstore
-After=network.target mysql.service
-# If your unit is named mysqld.service, use that instead of mysql.service
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/var/www/ocean-market
-Environment=NODE_ENV=production
-# Loads the rest from .env via dotenv in app.js
-ExecStart=/usr/bin/node app.js
-Restart=on-failure
-RestartSec=5
-
-# Ensure User can write public/uploads
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Adjust paths and `User`. Then:
-
-```bash
-# Example ownership if app lives in /var/www/ocean-market
-sudo chown -R www-data:www-data /var/www/ocean-market
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now ocean-market
-sudo systemctl status ocean-market
-sudo journalctl -u ocean-market -f
-```
-
----
-
-## 8. Reverse proxy + HTTPS (nginx)
+## 6. Reverse proxy + HTTPS (nginx)
 
 ```bash
 sudo apt install -y nginx certbot python3-certbot-nginx
@@ -202,7 +167,7 @@ server {
     client_max_body_size 6M;   # product photo uploads
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:4840;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -225,48 +190,71 @@ With HTTPS:
 
 - `TRUST_PROXY=true`
 - `COOKIE_SECURE=true`
-- `HOST=127.0.0.1`
-- Restart: `sudo systemctl restart ocean-market`
+- `HOST_BIND=127.0.0.1`
+- Restart: `docker compose up -d`
+
+This host already uses `adavis.shop` → `127.0.0.1:4840`.
 
 ---
 
-## 9. Firewall (optional but recommended)
+## 7. Firewall (optional but recommended)
 
 ```bash
 sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx Full'
 sudo ufw enable
-# Do not expose 3000 or 3306 publicly if nginx is on 80/443 and MySQL is local
+# Do not expose 4840 or 3306 publicly if nginx is on 80/443 and MySQL is remote
 ```
 
 ---
 
-## 10. Post-deploy checklist
+## 8. Post-deploy checklist
 
 1. Open the storefront URL and place a **test order**
 2. Confirm email arrives at `EMAIL_TO`
 3. Log into admin: `/admin?key=YOUR_ADMIN_KEY`
 4. Confirm product photos load
-5. Confirm MySQL connection works (`mysql -u ocean -p ocean -e "SELECT COUNT(*) FROM products;"`)
+5. Confirm MySQL connection works (provider console, or `docker compose logs web`)
 6. Change the default **admin key** in `config.js` if you have not already
 
 ---
 
 ## Updating later
 
+Push to `main` (or run the **Deploy** workflow). That rsyncs source and runs:
+
 ```bash
-# Upload a new zip or rsync source files (keep .env)
-cd /path/to/ocean-market
-npm ci
-sudo systemctl restart ocean-market
+docker compose up --build -d --remove-orphans
+```
+
+`.env` and `public/uploads` are left in place.
+
+Manual update:
+
+```bash
+cd /var/www/ocean-market
+# deploy new files, keep .env and public/uploads
+docker compose up --build -d
 ```
 
 Back up regularly:
 
 ```bash
-mysqldump -u ocean -p ocean > "backups/ocean-$(date +%F).sql"
+# managed MySQL: use the provider dump, or:
+# mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p "$MYSQL_DATABASE" \
+#   > "backups/ocean-$(date +%F).sql"
 # and public/uploads/products/
 ```
+
+Useful commands:
+
+| Command | Purpose |
+|---------|---------|
+| `docker compose ps` | Container status |
+| `docker compose logs -f web` | Tail logs |
+| `docker compose up --build -d` | Rebuild and restart after a deploy |
+| `docker compose down` | Stop without deleting images |
+| `docker compose restart web` | Restart the running container |
 
 ---
 
@@ -274,141 +262,18 @@ mysqldump -u ocean -p ocean > "backups/ocean-$(date +%F).sql"
 
 | Problem | What to check |
 |---------|----------------|
-| App exits on start with MySQL error | `MYSQL_*` in `.env`, MySQL running, `scripts/init-ocean.sql` applied |
-| Access denied for user `ocean` | Re-run init script or reset password / grants |
-| Site unreachable | `systemctl status ocean-market`, nginx config, `HOST` / firewall |
+| App exits on start with MySQL error | `MYSQL_*` in `.env`, TLS (`MYSQL_SSL`), Aiven/host firewall |
+| Access denied for user | Reset password / grants; re-run `npm run db:init` |
+| Site unreachable | `docker compose ps`, nginx config, `HOST_BIND` / firewall |
+| Health check stays 503 | `docker compose logs web` — MySQL still connecting or failing |
+| Published port already in use | Old PM2 process: `pm2 delete ocean-market && pm2 save` |
 | Wrong client IP / rate limit | `TRUST_PROXY=true` and nginx `X-Forwarded-For` |
 | Sessions drop on HTTPS | `COOKIE_SECURE=true` + `TRUST_PROXY=true` |
 | No order emails | `.env` SMTP vars, Gmail App Password, server outbound 587 |
-| Permission denied on uploads | `chown` app user on `public/uploads` |
+| Permission denied on uploads | `chown -R 1000:1000 public/uploads` |
 
 ---
 
-## Quick one-liner start (no systemd)
+## Alternative: run without Docker (PM2 / systemd)
 
-```bash
-cd /path/to/ocean-market && NODE_ENV=production npm start
-```
-
-Prefer **systemd** (section 7) or **PM2** (below) so the process survives logout and reboots.
-
----
-
-## Alternative: keep it running with PM2
-
-An example process file ships as [`ecosystem.config.cjs`](./ecosystem.config.cjs). It starts a single fork of `app.js` (do not cluster without a shared session store).
-
-```bash
-cd /path/to/ocean-market
-npm ci
-# ensure .env exists and MySQL is ready
-npm i -g pm2
-pm2 start ecosystem.config.cjs
-pm2 status
-pm2 logs ocean-market
-pm2 save
-pm2 startup   # follow the printed command (often needs sudo)
-```
-
-After an update:
-
-```bash
-cd /path/to/ocean-market
-# deploy new files, keep .env
-npm ci
-pm2 restart ocean-market --update-env
-# Prefer the ecosystem file so cwd is always the app directory:
-# pm2 delete ocean-market && pm2 start ecosystem.config.cjs && pm2 save
-```
-
-Useful commands:
-
-| Command | Purpose |
-|---------|---------|
-| `pm2 status` | List processes |
-| `pm2 logs ocean-market` | Tail logs |
-| `pm2 restart ocean-market` | Restart after deploy |
-| `pm2 stop ocean-market` | Stop without deleting |
-| `pm2 delete ocean-market` | Remove from PM2 |
-
-### Reboot: PM2 online but curl fails / `pidusage` invalid PID
-
-`PM2 | Error caught while calling pidusage … One of the pids provided is invalid` means the **Node process already exited** (usually right after boot). PM2 still tries to sample a dead PID — that log is a symptom, not the root cause.
-
-Typical root cause: **PM2 starts before MySQL**, the app used to `process.exit(1)` before binding a port, so `curl` got connection refused.
-
-Current behavior:
-
-1. HTTP **binds immediately** on `PORT` (valid PM2 PID → no pidusage spam)
-2. `/healthz` returns **503** until MySQL init succeeds, then **200**
-3. Other routes return **503** while starting; MySQL is retried forever with backoff
-
-Still do this once on the server:
-
-```bash
-# 1) Start from the app dir with the ecosystem file (locks cwd)
-cd /var/www/ocean-market   # or your REMOTE_DIR
-pm2 delete ocean-market 2>/dev/null || true
-pm2 start ecosystem.config.cjs
-pm2 save
-
-# 2) Make PM2 wait for MySQL on boot (unit name is often pm2-root)
-sudo systemctl edit pm2-root
-```
-
-Add:
-
-```ini
-[Unit]
-After=network-online.target mysql.service mysqld.service
-Wants=network-online.target
-```
-
-Then:
-
-```bash
-sudo systemctl daemon-reload
-# verify after reboot:
-pm2 status
-pm2 logs ocean-market --lines 50 --nostream
-ss -lntp | grep 4840    # or your PORT from .env
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
-# expect 503 briefly, then 200 once MySQL is up
-```
-
-### fnm + reboot (pid N/A / 502 bad gateway)
-
-If `pm2 status` shows **online** but **pid N/A** and **0b mem**, PM2 saved an
-ephemeral fnm path (`/run/user/0/fnm_multishells/...`) that vanishes after reboot.
-
-Fix once on the server:
-
-```bash
-STABLE_BIN=/root/.local/share/fnm/node-versions/v24.19.0/installation/bin   # adjust version
-ln -sfn "$STABLE_BIN/node" /usr/local/bin/node
-ln -sfn "$STABLE_BIN/npm"  /usr/local/bin/npm
-ln -sfn "$STABLE_BIN/pm2"  /usr/local/bin/pm2
-
-export PATH="$STABLE_BIN:/usr/local/bin:/usr/bin:/bin"
-unset FNM_MULTISHELL_PATH
-pm2 kill
-cd /var/www/ocean-market
-pm2 start ecosystem.config.cjs   # resolves stable interpreter
-pm2 save
-
-# systemd unit PATH must not include fnm_multishells
-sudo systemctl edit --full pm2-root   # or rewrite Environment=PATH=...
-sudo systemctl daemon-reload
-sudo systemctl enable --now pm2-root
-```
-
-Then reboot and confirm:
-
-```bash
-ss -lntp | grep 4840
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4840/healthz
-```
-
-If logs show MySQL errors until success, retries are working. If PORT is wrong, confirm `.env` has `PORT=4840` next to `app.js`.
-
-Still put **nginx** in front (section 8) with `HOST=127.0.0.1`, `TRUST_PROXY=true`, and `COOKIE_SECURE=true` in `.env` for HTTPS.
+The app can still run with host Node (`npm ci` + `npm start`, systemd, or [`ecosystem.config.cjs`](./ecosystem.config.cjs) + PM2). That path is no longer what production deploy uses. Prefer Docker so the host does not need Node, fnm, or a process manager.

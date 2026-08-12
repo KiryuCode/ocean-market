@@ -1,0 +1,20 @@
+name: ocean-market
+
+services:
+  web:
+    build: .
+    ports:
+      # Local default publishes on all interfaces. Production sets HOST_BIND=127.0.0.1
+      # so nginx is the only public entry (do not expose the app port on the VPS).
+      - "${HOST_BIND:-0.0.0.0}:${PORT:-3000}:${PORT:-3000}"
+    env_file:
+      - .env
+    environment:
+      # Container must listen on all interfaces so the published port works,
+      # even if the host .env still has HOST=127.0.0.1 from the old PM2 setup.
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./public/uploads:/app/public/uploads
+    restart: unless-stopped
