@@ -163,6 +163,7 @@ sudo nano /etc/nginx/sites-available/ocean-market
 server {
     listen 80;
     server_name shop.example.com;
+    server_tokens off;
 
     client_max_body_size 6M;   # product photo uploads
 
@@ -173,9 +174,12 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_hide_header X-Powered-By;
     }
 }
 ```
+
+`server_tokens off` must also be in `http` (or a `conf.d` snippet) so the version is hidden on every vhost, including default error pages. Deploy writes `/etc/nginx/conf.d/ocean-market-security.conf`. The app sets HSTS, CSP, `X-Frame-Options`, `X-Content-Type-Options`, and `Referrer-Policy`.
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/ocean-market /etc/nginx/sites-enabled/

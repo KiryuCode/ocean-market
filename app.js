@@ -71,6 +71,37 @@ function resolveAdminPasswordHash() {
 const adminPasswordHash = resolveAdminPasswordHash();
 
 const app = express();
+app.disable("x-powered-by");
+
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "font-src 'self'",
+].join("; ");
+
+function isHttpsRequest(req) {
+  return Boolean(req.secure) || req.get("x-forwarded-proto") === "https";
+}
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  if (isHttpsRequest(req)) {
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains"
+    );
+  }
+  next();
+});
 
 // Correct client IPs / secure cookies when reverse-proxied (nginx, Caddy, etc.)
 if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {

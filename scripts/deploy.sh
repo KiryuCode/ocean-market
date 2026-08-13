@@ -117,6 +117,16 @@ if command -v pm2 >/dev/null 2>&1 && pm2 describe ocean-market >/dev/null 2>&1; 
   pm2 save --force || true
 fi
 
+if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx/conf.d ]; then
+  echo "==> Hide nginx version (server_tokens off)"
+  printf '%s\n' 'server_tokens off;' > /etc/nginx/conf.d/ocean-market-security.conf
+  if nginx -t; then
+    systemctl reload nginx
+  else
+    echo "WARNING: nginx -t failed; did not reload nginx"
+  fi
+fi
+
 echo "==> docker compose up --build"
 docker compose up --build -d --remove-orphans
 docker compose ps
