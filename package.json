@@ -7,12 +7,14 @@
     "start": "node app.js",
     "dev": "node --watch app.js",
     "db:init": "node scripts/init-db.js",
+    "admin:hash": "node scripts/hash-admin-password.js",
     "pack": "bash scripts/pack-deploy.sh"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "ejs": "^3.1.10",
     "express": "^4.21.2",

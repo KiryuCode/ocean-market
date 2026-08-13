@@ -36,7 +36,7 @@
                   class="order-row"
                   tabindex="0"
                   role="link"
-                  data-href="/admin/orders/<%= order.order_id %>?key=<%= encodeURIComponent(adminKey) %>"
+                  data-href="/admin/orders/<%= order.order_id %>"
                   title="View receipt for order <%= order.order_id_display %>"
                 >
                   <td class="mono"><%= order.order_id_display %></td>
@@ -105,7 +105,6 @@
                       action="/admin/products/<%= product.id %>/update"
                       class="admin-pricing-form"
                     >
-                      <input type="hidden" name="key" value="<%= adminKey %>">
                       <label class="admin-field-label">
                         Price
                         <input
@@ -140,7 +139,6 @@
                       enctype="multipart/form-data"
                       class="admin-photo-form"
                     >
-                      <input type="hidden" name="key" value="<%= adminKey %>">
                       <input type="file" name="photo" accept="image/jpeg,image/png,image/gif,image/webp" required>
                       <button type="submit" class="btn btn-secondary btn-sm">Upload</button>
                     </form>
@@ -164,8 +162,6 @@
         enctype="multipart/form-data"
         class="admin-add-form"
       >
-        <input type="hidden" name="key" value="<%= adminKey %>">
-
         <div class="form-row">
           <div class="form-group">
             <label for="name">Name</label>
@@ -215,8 +211,7 @@
       <div class="section-heading-row">
         <h2 class="section-title">IP order counts</h2>
         <% if (ipCounts.length) { %>
-          <form method="post" action="/admin/ip-counts/reset?key=<%= encodeURIComponent(adminKey) %>">
-            <input type="hidden" name="key" value="<%= adminKey %>">
+          <form method="post" action="/admin/ip-counts/reset">
             <input type="hidden" name="ip_address" value="all">
             <button type="submit" class="btn btn-secondary btn-sm">Reset all counters</button>
           </form>
@@ -244,8 +239,7 @@
                   <td><%= row.order_count %></td>
                   <td><%= Math.max(0, maxOrdersPerIp - row.order_count) %></td>
                   <td>
-                    <form method="post" action="/admin/ip-counts/reset?key=<%= encodeURIComponent(adminKey) %>">
-                      <input type="hidden" name="key" value="<%= adminKey %>">
+                    <form method="post" action="/admin/ip-counts/reset">
                       <input type="hidden" name="ip_address" value="<%= row.ip_address %>">
                       <button type="submit" class="btn btn-secondary btn-sm">Reset</button>
                     </form>
@@ -261,8 +255,11 @@
     </section>
   </div>
 
-  <p style="margin-top:1.5rem;">
+  <p style="margin-top:1.5rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
     <a class="btn btn-secondary" href="/">Back to shop</a>
+    <form method="post" action="/admin/logout">
+      <button type="submit" class="btn btn-secondary">Log out</button>
+    </form>
   </p>
 
   <script src="/js/admin.js" defer></script>

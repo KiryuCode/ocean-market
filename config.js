@@ -85,10 +85,15 @@ const HOST = process.env.HOST || "0.0.0.0";
 // Admin
 // ---------------------------------------------------------------------------
 /**
- * Simple shared password for the admin order list (query param or form).
- * Visit: /admin?key=YOUR_ADMIN_KEY
+ * Admin login credentials come from .env — never from the URL.
+ *
+ *   ADMIN_PASSWORD        plaintext password (hashed with bcrypt at boot)
+ *   ADMIN_PASSWORD_HASH   bcrypt hash (preferred; wins if both are set)
+ *
+ * Generate a hash: npm run admin:hash -- 'your-password'
  */
-const ADMIN_KEY = "ocean-admin-2024";
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "").trim();
+const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
 
 // ---------------------------------------------------------------------------
 // SEO (search engines & social sharing)
@@ -350,7 +355,8 @@ module.exports = {
   getMysqlConfig,
   PORT,
   HOST,
-  ADMIN_KEY,
+  ADMIN_PASSWORD,
+  ADMIN_PASSWORD_HASH,
   SITE_URL,
   SEO,
   buildSeo,

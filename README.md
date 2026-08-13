@@ -44,6 +44,7 @@ Edit `.env` and set at least:
 | `MYSQL_PASSWORD` | Default `ocean_pass`                       |
 | `MYSQL_DATABASE` | Default `ocean`                            |
 | `SESSION_SECRET` | Use a random string (see below)            |
+| `ADMIN_PASSWORD` **or** `ADMIN_PASSWORD_HASH` | One is enough (see [Admin login](#admin-login)) |
 | `SITE_URL`       | Public origin, no trailing slash           |
 
 Generate a session secret:
@@ -86,7 +87,7 @@ Then open:
 | Page  | URL                                                      |
 |-------|----------------------------------------------------------|
 | Store | http://127.0.0.1:3000                                    |
-| Admin | http://127.0.0.1:3000/admin?key=ocean-admin-2024         |
+| Admin | http://127.0.0.1:3000/admin                              |
 
 On first successful connect, the app ensures tables exist and seeds the default catalog if `products` is empty.
 
@@ -107,22 +108,42 @@ The app is published on port `3000` by default (`PORT` / `HOST_BIND` in `.env`).
 | `npm start`                   | Start the server                                 |
 | `npm run dev`                 | Start with Node `--watch`                        |
 | `npm run db:init`             | Create database and tables from `.env`           |
+| `npm run admin:hash -- 'password'` | Print a bcrypt hash for `ADMIN_PASSWORD_HASH` |
 | `npm run pack`                | Build `ocean-market-deploy.zip`                  |
 | `docker compose up --build`   | Build and run the production container           |
 
 ## Configuration
 
-Store branding, admin key, order limits, seed products, and SEO live in [`config.js`](./config.js). Connection secrets and SMTP live in `.env` (see [`.env.example`](./.env.example)).
+Store branding, order limits, seed products, and SEO live in [`config.js`](./config.js). Connection secrets, the admin password, and SMTP live in `.env` (see [`.env.example`](./.env.example)).
 
-Default admin key (change before any real deploy):
+### Admin login
 
-```text
-ocean-admin-2024
+Admin login is session-based. Visit `/admin` and sign in. The password is never placed in the URL.
+
+Set **one** of these in `.env`:
+
+| Variable               | When to use |
+|------------------------|-------------|
+| `ADMIN_PASSWORD`       | Plaintext password. Hashed with bcrypt at boot. Fine for local dev. |
+| `ADMIN_PASSWORD_HASH`  | bcrypt hash of the password. Preferred, especially in production. |
+
+`ADMIN_PASSWORD` is **not** required if `ADMIN_PASSWORD_HASH` is set. The hash is used on its own. If both are set, `ADMIN_PASSWORD_HASH` wins and the plaintext value is ignored.
+
+Generate a hash (example password `password123`):
+
+```bash
+npm run admin:hash -- 'password123'
 ```
 
-Visit `/admin` and enter the key, or use `/admin?key=YOUR_ADMIN_KEY`.
+The script prints a line like:
 
-Change `ADMIN_KEY`, `SESSION_SECRET`, and the MySQL password before production. For managed MySQL, set `MYSQL_SSL=true`.
+```
+ADMIN_PASSWORD_HASH=$2b$12$…
+```
+
+Paste that into `.env` and **remove** `ADMIN_PASSWORD` so the plaintext password is not sitting next to the hash.
+
+Change `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, and the MySQL password before production. For managed MySQL, set `MYSQL_SSL=true`.
 
 Production hosting (Docker Compose, nginx, TLS) is documented in [HOSTING.md](./HOSTING.md).
 

@@ -7,7 +7,7 @@
  *   npm start
  *
  * Then open http://127.0.0.1:3000
- * Admin: http://127.0.0.1:3000/admin?key=ocean-admin-2024
+ * Admin: http://127.0.0.1:3000/admin
  */
 
 const fs = require("fs");
@@ -16,6 +16,8 @@ const path = require("path");
 // Always load .env next to this file (PM2/systemd cwd can differ after reboot)
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
+const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const express = require("express");
 const session = require("express-session");
 const multer = require("multer");
@@ -28,7 +30,8 @@ const {
   MAX_ORDERS_PER_IP,
   PORT,
   HOST,
-  ADMIN_KEY,
+  ADMIN_PASSWORD,
+  ADMIN_PASSWORD_HASH,
   SITE_URL,
   PLACEHOLDER_IMAGE,
   formatPrice,
@@ -36,6 +39,29 @@ const {
   buildSeo,
   getSitemapEntries,
 } = require("./config");
+
+const BCRYPT_ROUNDS = 12;
+const DEFAULT_ADMIN_PASSWORD = "ocean-admin-2024";
+
+/**
+ * Resolve the bcrypt hash used to verify admin logins.
+ * Prefer ADMIN_PASSWORD_HASH; otherwise hash ADMIN_PASSWORD at boot.
+ */
+function resolveAdminPasswordHash() {
+  if (ADMIN_PASSWORD_HASH) {
+    return ADMIN_PASSWORD_HASH;
+  }
+  if (ADMIN_PASSWORD) {
+    return bcrypt.hashSync(ADMIN_PASSWORD, BCRYPT_ROUNDS);
+  }
+  console.warn(
+    "[warn] Set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env. " +
+      "Using the built-in default is not safe for production."
+  );
+  return bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, BCRYPT_ROUNDS);
+}
+
+const adminPasswordHash = resolveAdminPasswordHash();
 
 const app = express();
 
@@ -196,14 +222,14 @@ function clientIp(req) {
   return ip;
 }
 
-function adminKeyFrom(req) {
-  return String(req.query.key || req.body.key || "").trim();
+function isAdminSession(req) {
+  return Boolean(req.session && req.session.isAdmin);
 }
 
 function requireAdmin(req, res) {
-  if (adminKeyFrom(req) !== ADMIN_KEY) {
+  if (!isAdminSession(req)) {
     res.status(401).render("admin_login", {
-      invalidKey: true,
+      invalidPassword: false,
       seo: buildSeo("admin"),
     });
     return false;
@@ -211,12 +237,25 @@ function requireAdmin(req, res) {
   return true;
 }
 
+async function verifyAdminPassword(password) {
+  try {
+    if (typeof password !== "string" || password.length === 0) {
+      // Dummy compare so a missing password takes roughly the same time.
+      await bcrypt.compare(crypto.randomBytes(32).toString("hex"), adminPasswordHash);
+      return false;
+    }
+    return await bcrypt.compare(password, adminPasswordHash);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build an admin URL, optionally targeting a section tab via hash.
  * Examples: adminUrl() · adminUrl({ hash: "orders" })
  */
 function adminUrl({ hash = "orders" } = {}) {
-  let url = `/admin?key=${encodeURIComponent(ADMIN_KEY)}`;
+  let url = "/admin";
   if (hash) url += `#${hash}`;
   return url;
 }
@@ -454,13 +493,17 @@ app.post("/confirm", async (req, res, next) => {
 
 app.get("/admin", async (req, res, next) => {
   try {
-    if (!requireAdmin(req, res)) return;
+    if (!isAdminSession(req)) {
+      return res.render("admin_login", {
+        invalidPassword: false,
+        seo: buildSeo("admin"),
+      });
+    }
 
     res.render("admin", {
       orders: await db.listOrders(),
       ipCounts: await db.listIpCounts(),
       products: await db.listProducts(),
-      adminKey: ADMIN_KEY,
       seo: buildSeo("admin"),
     });
   } catch (err) {
@@ -468,15 +511,33 @@ app.get("/admin", async (req, res, next) => {
   }
 });
 
-app.post("/admin", (req, res) => {
-  const provided = String(req.body.key || "").trim();
-  if (provided !== ADMIN_KEY) {
-    return res.status(401).render("admin_login", {
-      invalidKey: true,
-      seo: buildSeo("admin"),
+app.post("/admin", async (req, res, next) => {
+  try {
+    const provided = String(req.body.password || "");
+    const ok = await verifyAdminPassword(provided);
+    if (!ok) {
+      return res.status(401).render("admin_login", {
+        invalidPassword: true,
+        seo: buildSeo("admin"),
+      });
+    }
+
+    req.session.isAdmin = true;
+    return req.session.save((err) => {
+      if (err) return next(err);
+      return res.redirect(adminUrl());
     });
+  } catch (err) {
+    next(err);
   }
-  return res.redirect(adminUrl());
+});
+
+app.post("/admin/logout", (req, res, next) => {
+  req.session.isAdmin = false;
+  req.session.save((err) => {
+    if (err) return next(err);
+    return res.redirect("/admin");
+  });
 });
 
 /** Reset one IP order counter (or all if ip is empty / "all") */
@@ -523,7 +584,6 @@ app.get("/admin/orders/:orderId", async (req, res, next) => {
       lineItems,
       subtotal,
       hasPrices,
-      adminKey: ADMIN_KEY,
       seo: buildSeo("admin", {
         title: `Receipt ${order.order_id_display} — Admin`,
       }),
@@ -697,6 +757,16 @@ async function start() {
     );
   }
 
+  if (
+    isProd &&
+    !ADMIN_PASSWORD_HASH &&
+    (!ADMIN_PASSWORD || ADMIN_PASSWORD === DEFAULT_ADMIN_PASSWORD)
+  ) {
+    console.warn(
+      "[warn] Set a strong ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env for production."
+    );
+  }
+
   console.log(
     `[boot] cwd=${process.cwd()} __dirname=${__dirname} PORT=${PORT} HOST=${HOST}`
   );
@@ -718,9 +788,7 @@ async function start() {
     appReady = true;
     const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
     console.log(`${STORE_NAME} ready at http://${displayHost}:${PORT}`);
-    console.log(
-      `Admin: http://${displayHost}:${PORT}/admin?key=${ADMIN_KEY}`
-    );
+    console.log(`Admin: http://${displayHost}:${PORT}/admin`);
   } catch (err) {
     // Only reached if maxAttempts is set; default is infinite retry.
     console.error(

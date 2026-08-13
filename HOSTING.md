@@ -131,7 +131,7 @@ Notes:
 - `HOST_BIND=127.0.0.1` keeps the published port on loopback; nginx is the public entry
 - Compose overrides `HOST=0.0.0.0` inside the container so the published port works
 - Gmail app passwords: spaces optional; without spaces is simplest in `.env`
-- Change `ADMIN_KEY` in `config.js` (or plan to) before going live — default is `ocean-admin-2024`
+- Set a strong `ADMIN_PASSWORD` in `.env`, or store only `ADMIN_PASSWORD_HASH` (`npm run admin:hash -- 'your-password'`)
 
 ---
 
@@ -212,10 +212,10 @@ sudo ufw enable
 
 1. Open the storefront URL and place a **test order**
 2. Confirm email arrives at `EMAIL_TO`
-3. Log into admin: `/admin?key=YOUR_ADMIN_KEY`
+3. Log into admin at `/admin` with the password from `.env`
 4. Confirm product photos load
 5. Confirm MySQL connection works (provider console, or `docker compose logs web`)
-6. Change the default **admin key** in `config.js` if you have not already
+6. Confirm `ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH` is set in `.env` (not the default)
 
 ---
 
