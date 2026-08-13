@@ -1,6 +1,10 @@
 # Ocean Market
 
-A lightweight, ocean-themed webstore built with **Node.js**, **Express**, and **MySQL**. Browse a product catalog, manage a session-based shopping cart, place orders, and administer products and orders from a password-protected admin panel.
+A small, server-rendered webstore. Shoppers browse the catalog, add items to a cart, and place orders. Store owners manage products, photos, and orders from a password-protected admin panel.
+
+There is no separate frontend build. Express serves **EJS** pages and static files from `public/`. **MySQL** holds products, orders, and per-IP counters. **express-session** cookies back the cart and admin login. Admin passwords are checked with **bcrypt** (`ADMIN_PASSWORD` or `ADMIN_PASSWORD_HASH` in `.env`). Photo uploads go through **multer**; order emails are optional via **Nodemailer**/SMTP.
+
+Local development is Node 18+ and `npm run dev`. Production is a **Docker Compose** container behind nginx, deployed by GitHub Actions. Details live in [HOSTING.md](./HOSTING.md).
 
 ## Features
 
@@ -95,11 +99,11 @@ On first successful connect, the app ensures tables exist and seeds the default 
 
 ```bash
 cp .env.example .env
-# set MYSQL_* and SESSION_SECRET
+# set MYSQL_*, SESSION_SECRET, and ADMIN_PASSWORD (or ADMIN_PASSWORD_HASH)
 docker compose up --build
 ```
 
-The app is published on port `3000` by default (`PORT` / `HOST_BIND` in `.env`).
+The app is published on port `3000` by default (`PORT` / `HOST_BIND` in `.env`). MySQL is not part of this Compose file — point `MYSQL_*` at a database the container can reach.
 
 ## Scripts
 
@@ -109,8 +113,8 @@ The app is published on port `3000` by default (`PORT` / `HOST_BIND` in `.env`).
 | `npm run dev`                 | Start with Node `--watch`                        |
 | `npm run db:init`             | Create database and tables from `.env`           |
 | `npm run admin:hash -- 'password'` | Print a bcrypt hash for `ADMIN_PASSWORD_HASH` |
-| `npm run pack`                | Build `ocean-market-deploy.zip`                  |
-| `docker compose up --build`   | Build and run the production container           |
+| `npm run pack`                | Build a zip for a manual server upload           |
+| `docker compose up --build`   | Build and run the app container                  |
 
 ## Configuration
 
