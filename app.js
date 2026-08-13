@@ -41,24 +41,31 @@ const {
 } = require("./config");
 
 const BCRYPT_ROUNDS = 12;
-const DEFAULT_ADMIN_PASSWORD = "ocean-admin-2024";
+// Never accept this as a live password — it was the old built-in default.
+const REJECTED_ADMIN_PASSWORD = "ocean-admin-2024";
 
 /**
  * Resolve the bcrypt hash used to verify admin logins.
  * Prefer ADMIN_PASSWORD_HASH; otherwise hash ADMIN_PASSWORD at boot.
+ * Missing env must not open admin with a built-in password.
  */
 function resolveAdminPasswordHash() {
   if (ADMIN_PASSWORD_HASH) {
     return ADMIN_PASSWORD_HASH;
   }
   if (ADMIN_PASSWORD) {
+    if (ADMIN_PASSWORD === REJECTED_ADMIN_PASSWORD) {
+      throw new Error(
+        "ADMIN_PASSWORD is a known insecure value. " +
+          "Set a strong ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env."
+      );
+    }
     return bcrypt.hashSync(ADMIN_PASSWORD, BCRYPT_ROUNDS);
   }
-  console.warn(
-    "[warn] Set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env. " +
-      "Using the built-in default is not safe for production."
+  throw new Error(
+    "Set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env. " +
+      "Refusing to start with a built-in default password."
   );
-  return bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, BCRYPT_ROUNDS);
 }
 
 const adminPasswordHash = resolveAdminPasswordHash();
@@ -757,13 +764,9 @@ async function start() {
     );
   }
 
-  if (
-    isProd &&
-    !ADMIN_PASSWORD_HASH &&
-    (!ADMIN_PASSWORD || ADMIN_PASSWORD === DEFAULT_ADMIN_PASSWORD)
-  ) {
+  if (isProd && !ADMIN_PASSWORD_HASH) {
     console.warn(
-      "[warn] Set a strong ADMIN_PASSWORD or ADMIN_PASSWORD_HASH in .env for production."
+      "[warn] Prefer ADMIN_PASSWORD_HASH over plaintext ADMIN_PASSWORD in production."
     );
   }
 

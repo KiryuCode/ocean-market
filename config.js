@@ -90,6 +90,7 @@ const HOST = process.env.HOST || "0.0.0.0";
  *   ADMIN_PASSWORD        plaintext password (hashed with bcrypt at boot)
  *   ADMIN_PASSWORD_HASH   bcrypt hash (preferred; wins if both are set)
  *
+ * One of these is required. There is no built-in default password.
  * Generate a hash: npm run admin:hash -- 'your-password'
  */
 const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "").trim();
