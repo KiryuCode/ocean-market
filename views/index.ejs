@@ -24,6 +24,7 @@
             <div class="product-actions">
               <% if (product.qtyAvailable > 0) { %>
                 <form method="post" action="/cart/add" class="inline-form js-add-to-cart">
+                  <%- include('partials/csrf') %>
                   <input type="hidden" name="product_id" value="<%= product.id %>">
                   <input type="hidden" name="redirect" value="shop">
                   <button type="submit" class="btn btn-secondary btn-sm">Add to Cart</button>

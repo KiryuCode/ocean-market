@@ -105,6 +105,7 @@
                       action="/admin/products/<%= product.id %>/update"
                       class="admin-pricing-form"
                     >
+                      <%- include('partials/csrf') %>
                       <label class="admin-field-label">
                         Price
                         <input
@@ -139,6 +140,7 @@
                       enctype="multipart/form-data"
                       class="admin-photo-form"
                     >
+                      <%- include('partials/csrf') %>
                       <input type="file" name="photo" accept="image/jpeg,image/png,image/gif,image/webp" required>
                       <button type="submit" class="btn btn-secondary btn-sm">Upload</button>
                     </form>
@@ -162,6 +164,7 @@
         enctype="multipart/form-data"
         class="admin-add-form"
       >
+        <%- include('partials/csrf') %>
         <div class="form-row">
           <div class="form-group">
             <label for="name">Name</label>
@@ -212,6 +215,7 @@
         <h2 class="section-title">IP order counts</h2>
         <% if (ipCounts.length) { %>
           <form method="post" action="/admin/ip-counts/reset">
+            <%- include('partials/csrf') %>
             <input type="hidden" name="ip_address" value="all">
             <button type="submit" class="btn btn-secondary btn-sm">Reset all counters</button>
           </form>
@@ -240,6 +244,7 @@
                   <td><%= Math.max(0, maxOrdersPerIp - row.order_count) %></td>
                   <td>
                     <form method="post" action="/admin/ip-counts/reset">
+                      <%- include('partials/csrf') %>
                       <input type="hidden" name="ip_address" value="<%= row.ip_address %>">
                       <button type="submit" class="btn btn-secondary btn-sm">Reset</button>
                     </form>
@@ -258,6 +263,7 @@
   <p style="margin-top:1.5rem;display:flex;gap:0.75rem;flex-wrap:wrap;">
     <a class="btn btn-secondary" href="/">Back to shop</a>
     <form method="post" action="/admin/logout">
+      <%- include('partials/csrf') %>
       <button type="submit" class="btn btn-secondary">Log out</button>
     </form>
   </p>

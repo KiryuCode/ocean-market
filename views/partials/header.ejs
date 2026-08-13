@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
   <%
     // Prefer route-level `title`, then seo.title from config/app, then store name
     const pageTitle = typeof title !== 'undefined' && title

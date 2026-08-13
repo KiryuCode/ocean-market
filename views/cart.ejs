@@ -36,6 +36,7 @@
                 <td class="price">$<%= formatPrice(item.product.price) %></td>
                 <td>
                   <form method="post" action="/cart/update" class="qty-form">
+                    <%- include('partials/csrf') %>
                     <input type="hidden" name="product_id" value="<%= item.product.id %>">
                     <input
                       type="number"
@@ -52,6 +53,7 @@
                 <td class="price">$<%= formatPrice(item.lineTotal) %></td>
                 <td>
                   <form method="post" action="/cart/remove">
+                    <%- include('partials/csrf') %>
                     <input type="hidden" name="product_id" value="<%= item.product.id %>">
                     <button type="submit" class="btn btn-secondary btn-sm">Remove</button>
                   </form>

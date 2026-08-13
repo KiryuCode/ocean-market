@@ -49,6 +49,7 @@
     </div>
 
     <form method="post" action="/confirm">
+      <%- include('partials/csrf') %>
       <input type="hidden" name="mode" value="<%= mode %>">
       <% if (!isCart && product) { %>
         <input type="hidden" name="product_id" value="<%= product.id %>">

@@ -24,6 +24,7 @@ const multer = require("multer");
 const db = require("./db");
 const cart = require("./cart");
 const mail = require("./mail");
+const csrf = require("./csrf");
 const {
   STORE_NAME,
   STORE_TAGLINE,
@@ -156,6 +157,16 @@ app.use(
     },
   })
 );
+
+app.use((req, res, next) => {
+  if (req.path !== "/healthz") {
+    res.locals.csrfToken = csrf.getCsrfToken(req);
+  } else {
+    res.locals.csrfToken = "";
+  }
+  next();
+});
+app.use(csrf.csrfProtect);
 
 app.use((req, res, next) => {
   res.locals.storeName = STORE_NAME;
@@ -635,6 +646,7 @@ app.get("/admin/orders/:orderId", async (req, res, next) => {
 app.post("/admin/products", (req, res) => {
   upload.single("photo")(req, res, async (err) => {
     try {
+      if (!csrf.verifyParsedCsrf(req, res)) return;
       if (!requireAdmin(req, res)) return;
 
       if (err) {
@@ -718,6 +730,7 @@ app.post("/admin/products/:productId/update", async (req, res, next) => {
 app.post("/admin/products/:productId/photo", (req, res) => {
   upload.single("photo")(req, res, async (err) => {
     try {
+      if (!csrf.verifyParsedCsrf(req, res)) return;
       if (!requireAdmin(req, res)) return;
 
       if (err) {

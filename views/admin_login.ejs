@@ -9,6 +9,7 @@
     <% } %>
 
     <form method="post" action="/admin">
+      <%- include('partials/csrf') %>
       <div class="form-group">
         <label for="password">Password</label>
         <input type="password" id="password" name="password" required autocomplete="current-password">

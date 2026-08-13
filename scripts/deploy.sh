@@ -40,6 +40,7 @@ rsync -avz \
   app.js \
   cart.js \
   config.js \
+  csrf.js \
   db.js \
   mail.js \
   package.json \

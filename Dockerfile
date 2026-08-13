@@ -9,7 +9,7 @@ ENV NODE_ENV=production \
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
-COPY app.js cart.js config.js db.js mail.js ./
+COPY app.js cart.js config.js csrf.js db.js mail.js ./
 COPY views ./views
 COPY public ./public
 COPY scripts ./scripts

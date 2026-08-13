@@ -12,7 +12,7 @@ mkdir -p "$DEST"
 echo "Staging files into $DEST ..."
 
 # App source
-cp -a app.js cart.js config.js db.js mail.js package.json package-lock.json \
+cp -a app.js cart.js config.js csrf.js db.js mail.js package.json package-lock.json \
   README.md HOSTING.md .env.example .gitignore \
   Dockerfile docker-compose.yml .dockerignore \
   "$DEST/"
