@@ -115,6 +115,7 @@ MYSQL_USER=ocean
 MYSQL_PASSWORD=your-strong-db-password
 MYSQL_DATABASE=ocean
 MYSQL_SSL=true
+# MYSQL_SSL_CA=/path/to/aiven-ca.pem
 
 EMAIL_TO=andrew.davis64@gmail.com
 SMTP_HOST=smtp.gmail.com
@@ -132,6 +133,7 @@ Notes:
 - Compose overrides `HOST=0.0.0.0` inside the container so the published port works
 - Gmail app passwords: spaces optional; without spaces is simplest in `.env`
 - Set a strong `ADMIN_PASSWORD` in `.env`, or store only `ADMIN_PASSWORD_HASH` (`npm run admin:hash -- 'your-password'`)
+- `MYSQL_SSL=true` verifies the remote MySQL server certificate. For Aiven, set `MYSQL_SSL_CA` to the project CA downloaded from the service overview.
 
 ---
 

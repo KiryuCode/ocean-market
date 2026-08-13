@@ -147,7 +147,7 @@ ADMIN_PASSWORD_HASH=$2b$12$…
 
 Paste that into `.env` and **remove** `ADMIN_PASSWORD` so the plaintext password is not sitting next to the hash.
 
-Change `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, and the MySQL password before production. For managed MySQL, set `MYSQL_SSL=true`.
+Change `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, and the MySQL password before production. For managed MySQL, set `MYSQL_SSL=true` (the remote server certificate is verified by default; set `MYSQL_SSL_CA` to the provider CA file if needed).
 
 Production hosting (Docker Compose, nginx, TLS) is documented in [HOSTING.md](./HOSTING.md).
 
