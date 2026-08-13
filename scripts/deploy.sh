@@ -117,9 +117,16 @@ if command -v pm2 >/dev/null 2>&1 && pm2 describe ocean-market >/dev/null 2>&1; 
   pm2 save --force || true
 fi
 
-if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx/conf.d ]; then
+if command -v nginx >/dev/null 2>&1 && [ -f /etc/nginx/nginx.conf ]; then
   echo "==> Hide nginx version (server_tokens off)"
-  printf '%s\n' 'server_tokens off;' > /etc/nginx/conf.d/ocean-market-security.conf
+  # A second server_tokens in conf.d is a duplicate and fails nginx -t.
+  rm -f /etc/nginx/conf.d/ocean-market-security.conf
+  if grep -qE '^[[:space:]]*server_tokens[[:space:]]+' /etc/nginx/nginx.conf; then
+    sed -i -E 's/^[[:space:]]*server_tokens[[:space:]]+[^;]+;/    server_tokens off;/' \
+      /etc/nginx/nginx.conf
+  else
+    sed -i '/^http {/a\    server_tokens off;' /etc/nginx/nginx.conf
+  fi
   if nginx -t; then
     systemctl reload nginx
   else

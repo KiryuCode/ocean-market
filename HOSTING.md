@@ -179,7 +179,7 @@ server {
 }
 ```
 
-`server_tokens off` must also be in `http` (or a `conf.d` snippet) so the version is hidden on every vhost, including default error pages. Deploy writes `/etc/nginx/conf.d/ocean-market-security.conf`. The app sets HSTS, CSP, `X-Frame-Options`, `X-Content-Type-Options`, and `Referrer-Policy`.
+`server_tokens off` must replace any existing `server_tokens` in `/etc/nginx/nginx.conf` (Ubuntu ships `server_tokens build;`). A second copy in `conf.d` is a duplicate and fails `nginx -t`. The app sets HSTS, CSP, `X-Frame-Options`, `X-Content-Type-Options`, and `Referrer-Policy`.
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/ocean-market /etc/nginx/sites-enabled/
