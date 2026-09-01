@@ -11,7 +11,6 @@
  */
 
 const mysql = require("mysql2/promise");
-const { createSqlitePool } = require("./sqlite-pool");
 
 const {
   MAX_ORDERS_PER_IP,
@@ -86,6 +85,7 @@ function getPool() {
  */
 async function initDb() {
   if (process.env.SQLITE_FILE && !(pool && pool.__sqlite)) {
+    const { createSqlitePool } = require("./sqlite-pool");
     pool = await createSqlitePool(process.env.SQLITE_FILE);
   }
   const p = getPool();
