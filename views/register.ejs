@@ -1,0 +1,33 @@
+<%- include('partials/header') %>
+
+  <h1 class="page-title">Open an account</h1>
+  <p class="page-sub">Save your email so the next order is faster, and so we can find you if a weather hold hits the airport.</p>
+
+  <div class="panel">
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="alert alert-error"><%= error %></div>
+    <% } %>
+
+    <form method="post" action="/register">
+      <%- include('partials/csrf') %>
+      <div class="form-group">
+        <label for="name">Name <span class="hint-inline">(optional)</span></label>
+        <input type="text" id="name" name="name" autocomplete="name" value="<%= typeof name !== 'undefined' ? name : '' %>">
+      </div>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required autocomplete="email" value="<%= typeof email !== 'undefined' ? email : '' %>">
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required minlength="8" autocomplete="new-password">
+        <span class="hint">At least 8 characters.</span>
+      </div>
+      <div class="actions">
+        <button type="submit" class="btn btn-primary">Register</button>
+        <a class="btn btn-secondary" href="/login">Already have an account</a>
+      </div>
+    </form>
+  </div>
+
+<%- include('partials/footer') %>

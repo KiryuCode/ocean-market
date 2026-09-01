@@ -1,0 +1,337 @@
+/* Ocean Market — visual layer (bb5)
+   Keeps admin/cart/receipt rules in style.css. This file is the storefront skin. */
+
+:root {
+  --ocean-deep: #07151c;
+  --ocean-mid: #10313a;
+  --ocean-panel: #184850;
+  --ocean-accent: #d4a24a;
+  --ocean-accent-hover: #e8bc6a;
+  --ocean-teal: #4fd0b8;
+  --ocean-foam: #eef7f3;
+  --ocean-mist: #9bc4bb;
+  --ocean-danger: #ef7d7a;
+  --ocean-success: #5ed39a;
+  --gold: #d4a24a;
+  --ink: #07151c;
+  --font-display: Palatino, "Palatino Linotype", "Iowan Old Style", Georgia, serif;
+  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --radius: 14px;
+}
+
+body {
+  background:
+    radial-gradient(ellipse 90% 55% at 8% -10%, rgba(79, 208, 184, 0.16), transparent 50%),
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(212, 162, 74, 0.12), transparent 46%),
+    radial-gradient(ellipse 50% 40% at 80% 110%, rgba(24, 72, 80, 0.8), transparent 50%),
+    var(--ocean-deep);
+}
+
+.logo {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.logo-mark {
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  color: var(--gold);
+  background: radial-gradient(circle at 35% 30%, #2a6b68, #0c2d34 70%);
+  border: 1px solid rgba(212, 162, 74, 0.45);
+  box-shadow: 0 0 0 3px rgba(212, 162, 74, 0.08);
+}
+
+.logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.logo-name {
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  letter-spacing: 0.01em;
+}
+
+.logo-tagline {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.nav-cta {
+  color: var(--ink) !important;
+  background: var(--gold);
+  font-weight: 700;
+}
+
+.nav-cta:hover {
+  background: var(--ocean-accent-hover);
+  color: var(--ink) !important;
+}
+
+/* ---------- Hero ---------- */
+
+.hero {
+  position: relative;
+  margin: 0 0 2.4rem;
+  padding: 2.4rem 2rem 2.1rem;
+  border-radius: 22px;
+  overflow: hidden;
+  background:
+    linear-gradient(120deg, rgba(7, 21, 28, 0.2), rgba(7, 21, 28, 0.55)),
+    url("https://images.unsplash.com/photo-1582967788606-a171c1080cb0?w=1600&h=700&fit=crop")
+      center/cover no-repeat;
+  border: 1px solid rgba(212, 162, 74, 0.22);
+  box-shadow: 0 18px 50px rgba(0, 8, 16, 0.35);
+}
+
+.hero-kicker,
+.story-kicker {
+  margin: 0 0 0.55rem;
+  color: var(--gold);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.hero-title,
+.page-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.hero-title {
+  margin: 0 0 0.7rem;
+  font-size: clamp(2.1rem, 5vw, 3.4rem);
+  line-height: 1.05;
+  max-width: 14ch;
+}
+
+.hero-lede {
+  margin: 0 0 1.35rem;
+  max-width: 38rem;
+  color: var(--ocean-foam);
+  font-size: 1.05rem;
+}
+
+.hero-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.hero-cats a {
+  color: var(--ocean-foam);
+  background: rgba(7, 21, 28, 0.45);
+  border: 1px solid rgba(238, 247, 243, 0.18);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  backdrop-filter: blur(6px);
+}
+
+.hero-cats a:hover {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+.catalog-section {
+  scroll-margin-top: 5.5rem;
+}
+
+.category-title {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  color: var(--gold);
+  border-bottom: 1px solid rgba(212, 162, 74, 0.22);
+  padding-bottom: 0.45rem;
+}
+
+.product-grid {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.15rem;
+}
+
+@media (max-width: 900px) {
+  .product-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+.product-card {
+  background:
+    linear-gradient(180deg, rgba(24, 72, 80, 0.35), rgba(7, 21, 28, 0.4)),
+    var(--ocean-mid);
+  border-radius: 16px;
+}
+
+.product-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(212, 162, 74, 0.5);
+}
+
+.product-media {
+  position: relative;
+  overflow: hidden;
+}
+
+.product-image {
+  height: 210px;
+  transition: transform 0.45s ease;
+}
+
+.product-card:hover .product-image {
+  transform: scale(1.06);
+}
+
+.product-body {
+  padding: 0.85rem 0.95rem 1rem;
+  gap: 0.35rem;
+}
+
+.product-name {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+.product-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  color: var(--ocean-mist);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.product-card .price {
+  color: var(--gold);
+  font-family: var(--font-display);
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, #e8bc6a, var(--gold));
+  color: #1a1206;
+  box-shadow: 0 4px 14px rgba(212, 162, 74, 0.28);
+}
+
+.btn-primary:hover {
+  background: linear-gradient(180deg, #f0d08a, #e8bc6a);
+  color: #1a1206;
+}
+
+/* ---------- Footer ---------- */
+
+.site-footer {
+  width: min(1100px, 92%);
+  text-align: left;
+  padding: 2.4rem 0 2.2rem;
+}
+
+.footer-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr 1fr 1fr;
+  gap: 1.6rem 1.2rem;
+  margin-bottom: 1.5rem;
+}
+
+.footer-wordmark {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  color: var(--ocean-foam);
+}
+
+.footer-blurb {
+  margin: 0;
+  max-width: 22rem;
+  line-height: 1.5;
+}
+
+.footer-col h2 {
+  margin: 0 0 0.55rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.footer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.footer-col a {
+  color: var(--ocean-mist);
+}
+
+.footer-col a:hover {
+  color: var(--ocean-foam);
+}
+
+.footer-soon {
+  margin: 0.45rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.footer-legal {
+  margin: 0;
+  padding-top: 1.1rem;
+  border-top: 1px solid rgba(155, 196, 187, 0.15);
+  font-size: 0.8rem;
+  color: var(--ocean-mist);
+}
+
+@media (max-width: 760px) {
+  .footer-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .footer-brand {
+    grid-column: 1 / -1;
+  }
+  .hero {
+    padding: 1.6rem 1.15rem 1.5rem;
+  }
+}
+
+/* ---------- Story / static pages ---------- */
+
+.story {
+  max-width: 40rem;
+}
+
+.story-body p {
+  color: var(--ocean-mist);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  margin: 0 0 1rem;
+}
+
+.story-body p:first-child {
+  color: var(--ocean-foam);
+  font-size: 1.15rem;
+}
+
+.hint-inline {
+  font-weight: 400;
+  color: var(--ocean-mist);
+}
+
+.panel {
+  border-color: rgba(212, 162, 74, 0.18);
+}

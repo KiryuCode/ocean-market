@@ -66,6 +66,7 @@
           name="email"
           placeholder="you@example.com"
           autocomplete="email"
+          value="<%= typeof customer !== 'undefined' && customer && customer.email ? customer.email : '' %>"
         >
         <span class="hint">Used only for order follow-up. Leave blank to order anonymously.</span>
       </div>

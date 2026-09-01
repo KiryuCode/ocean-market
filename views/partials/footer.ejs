@@ -1,7 +1,38 @@
   </main>
 
   <footer class="site-footer">
-    <p><%= storeName %> &mdash; demo webstore. Orders are stored locally in <code>local.db</code>.</p>
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <p class="footer-wordmark"><%= storeName %></p>
+        <p class="footer-blurb">A small reef shop for planted tanks and mixed reefs. We pack live animals for overnight — not the weekend — and we would rather hold a box than cook one.</p>
+      </div>
+      <nav class="footer-col" aria-label="Shop">
+        <h2>Shop</h2>
+        <a href="/#aquatic-plants">Aquatic plants</a>
+        <a href="/#soft-corals">Soft corals</a>
+        <a href="/#lps-corals">LPS</a>
+        <a href="/#sps-corals">SPS</a>
+        <a href="/#zoanthids-anemones">Zoas &amp; anemones</a>
+        <a href="/#livestock">Livestock</a>
+        <a href="/#supplies">Supplies</a>
+      </nav>
+      <nav class="footer-col" aria-label="Help">
+        <h2>Help</h2>
+        <a href="/about">About</a>
+        <a href="/contact">Contact</a>
+        <a href="/shipping">Shipping</a>
+        <a href="/returns">Returns</a>
+        <a href="/care">Care guides</a>
+      </nav>
+      <nav class="footer-col footer-social-col" aria-label="Social">
+        <h2>Follow</h2>
+        <a href="#instagram" aria-disabled="true">Instagram</a>
+        <a href="#youtube" aria-disabled="true">YouTube</a>
+        <a href="#facebook" aria-disabled="true">Facebook</a>
+        <p class="footer-soon">Profiles coming — these are placeholders.</p>
+      </nav>
+    </div>
+    <p class="footer-legal"><%= storeName %> — live reef livestock, corals, plants, and supplies.</p>
   </footer>
   <script src="/js/cart.js" defer></script>
 </body>

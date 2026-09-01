@@ -1,43 +1,69 @@
 <%- include('partials/header') %>
 
-  <h1 class="page-title">Inventory</h1>
+  <section class="hero">
+    <p class="hero-kicker">Overnight live arrival</p>
+    <h1 class="hero-title">Bring the reef home.</h1>
+    <p class="hero-lede">Stem plants for the low-tech tank. Softies and zoas for the first mixed reef. LPS and SPS when the chemistry is honest. Fish, cleaners, and the salt to keep them.</p>
+    <nav class="hero-cats" aria-label="Catalog sections">
+      <a href="#aquatic-plants">Plants</a>
+      <a href="#soft-corals">Soft</a>
+      <a href="#lps-corals">LPS</a>
+      <a href="#sps-corals">SPS</a>
+      <a href="#zoanthids-anemones">Zoas</a>
+      <a href="#livestock">Livestock</a>
+      <a href="#supplies">Supplies</a>
+    </nav>
+  </section>
 
-  <div class="product-grid">
-    <% products.forEach(function (product) { %>
-      <article class="product-card">
-        <img
-          class="product-image"
-          src="<%= product.image %>"
-          alt="<%= product.name %>"
-          loading="lazy"
-          width="600"
-          height="188"
-        >
-        <div class="product-body">
-          <h2 class="product-name"><%= product.name %></h2>
-          <p class="product-desc"><%= product.description %></p>
-          <p class="product-stock<%= product.qtyAvailable < 1 ? ' product-stock-out' : '' %>">
-            <%= product.qtyAvailable < 1 ? 'Out of stock' : product.qtyAvailable + ' available' %>
-          </p>
-          <div class="product-footer">
-            <span class="price">$<%= formatPrice(product.price) %></span>
-            <div class="product-actions">
-              <% if (product.qtyAvailable > 0) { %>
-                <form method="post" action="/cart/add" class="inline-form js-add-to-cart">
-                  <%- include('partials/csrf') %>
-                  <input type="hidden" name="product_id" value="<%= product.id %>">
-                  <input type="hidden" name="redirect" value="shop">
-                  <button type="submit" class="btn btn-secondary btn-sm">Add to Cart</button>
-                </form>
-                <a class="btn btn-primary btn-sm" href="/buy/<%= product.id %>">Buy Now</a>
-              <% } else { %>
-                <span class="btn btn-secondary btn-sm" style="opacity:0.55;cursor:not-allowed;">Unavailable</span>
-              <% } %>
+  <%
+    function catId(name) {
+      return String(name || "shop").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/g, "");
+    }
+  %>
+
+  <% (typeof categories !== 'undefined' && categories.length ? categories : [{ name: 'Shop', products: products }]).forEach(function (group) { %>
+    <section class="catalog-section" id="<%= catId(group.name) %>">
+      <h2 class="category-title"><%= group.name %></h2>
+      <div class="product-grid">
+        <% group.products.forEach(function (product) { %>
+          <article class="product-card">
+            <div class="product-media">
+              <img
+                class="product-image"
+                src="<%= product.image %>"
+                alt="<%= product.name %>"
+                loading="lazy"
+                width="800"
+                height="520"
+              >
             </div>
-          </div>
-        </div>
-      </article>
-    <% }) %>
-  </div>
+            <div class="product-body">
+              <h3 class="product-name"><%= product.name %></h3>
+              <p class="product-desc"><%= product.description %></p>
+              <p class="product-stock<%= product.qtyAvailable < 1 ? ' product-stock-out' : '' %>">
+                <%= product.qtyAvailable < 1 ? 'Out of stock' : product.qtyAvailable + ' available' %>
+              </p>
+              <div class="product-footer">
+                <span class="price">$<%= formatPrice(product.price) %></span>
+                <div class="product-actions">
+                  <% if (product.qtyAvailable > 0) { %>
+                    <form method="post" action="/cart/add" class="inline-form js-add-to-cart">
+                      <%- include('partials/csrf') %>
+                      <input type="hidden" name="product_id" value="<%= product.id %>">
+                      <input type="hidden" name="redirect" value="shop">
+                      <button type="submit" class="btn btn-secondary btn-sm">Add to Cart</button>
+                    </form>
+                    <a class="btn btn-primary btn-sm" href="/buy/<%= product.id %>">Buy Now</a>
+                  <% } else { %>
+                    <span class="btn btn-secondary btn-sm" style="opacity:0.55;cursor:not-allowed;">Unavailable</span>
+                  <% } %>
+                </div>
+              </div>
+            </div>
+          </article>
+        <% }) %>
+      </div>
+    </section>
+  <% }) %>
 
 <%- include('partials/footer') %>

@@ -11,6 +11,8 @@
  */
 
 const mysql = require("mysql2/promise");
+const { createSqlitePool } = require("./sqlite-pool");
+
 const {
   MAX_ORDERS_PER_IP,
   DEFAULT_PRODUCTS,
@@ -45,11 +47,15 @@ function mapProduct(row) {
         ? row.qty_available
         : DEFAULT_QTY
     ),
+    category: row.category || "Shop",
   };
 }
 
 function getPool() {
   if (!pool) {
+    if (process.env.SQLITE_FILE) {
+      throw new Error("SQLite pool is not ready. initDb() must run first.");
+    }
     const cfg = getMysqlConfig();
     const poolOptions = {
       host: cfg.host,
@@ -79,6 +85,9 @@ function getPool() {
  * Call once at process start (await before listening).
  */
 async function initDb() {
+  if (process.env.SQLITE_FILE && !(pool && pool.__sqlite)) {
+    pool = await createSqlitePool(process.env.SQLITE_FILE);
+  }
   const p = getPool();
 
   await p.query(`
@@ -91,7 +100,22 @@ async function initDb() {
       qty_available INT          NOT NULL DEFAULT 25,
       sort_order    INT          NOT NULL DEFAULT 0,
       created_at    VARCHAR(64)  NOT NULL,
+      category      VARCHAR(64)  NOT NULL DEFAULT 'Shop',
       PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await ensureColumn(p, "products", "category", "VARCHAR(64) NOT NULL DEFAULT 'Shop'");
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id INT NOT NULL AUTO_INCREMENT,
+      email VARCHAR(255) NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      name VARCHAR(255) NOT NULL DEFAULT '',
+      created_at VARCHAR(64) NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY customers_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
@@ -130,8 +154,8 @@ async function initDb() {
         const product = DEFAULT_PRODUCTS[index];
         await conn.execute(
           `INSERT INTO products
-             (id, name, price, description, image, qty_available, sort_order, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             (id, name, price, description, image, qty_available, sort_order, created_at, category)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             product.id,
             product.name,
@@ -143,6 +167,7 @@ async function initDb() {
               : DEFAULT_QTY,
             index,
             now,
+            product.category || "Shop",
           ]
         );
       }
@@ -159,6 +184,33 @@ async function initDb() {
 // ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------
+
+async function ensureColumn(pool, table, column, definition) {
+  if (pool && pool.__sqlite) {
+    const [rows] = await pool.query(`PRAGMA table_info(${table})`);
+    const exists = rows.some((row) => String(row.name) === String(column));
+    if (!exists) {
+      await pool.query(
+        `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`
+      );
+    }
+    return;
+  }
+  const [rows] = await pool.query(
+    `SELECT 1 AS ok
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      LIMIT 1`,
+    [table, column]
+  );
+  if (!rows.length) {
+    await pool.query(
+      "ALTER TABLE `" + table + "` ADD COLUMN `" + column + "` " + definition
+    );
+  }
+}
 
 async function listProducts() {
   const [rows] = await getPool().query(
@@ -194,6 +246,7 @@ async function createProduct({
   description,
   image,
   qtyAvailable,
+  category,
 }) {
   const [sortRows] = await getPool().query(
     "SELECT COALESCE(MAX(sort_order), -1) AS m FROM products"
@@ -204,8 +257,8 @@ async function createProduct({
 
   await getPool().execute(
     `INSERT INTO products
-       (id, name, price, description, image, qty_available, sort_order, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, price, description, image, qty_available, sort_order, created_at, category)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       name,
@@ -215,6 +268,7 @@ async function createProduct({
       qty,
       Number(maxSort) + 1,
       createdAt,
+      category || "Shop",
     ]
   );
 
@@ -476,6 +530,50 @@ async function deleteOrdersByEmail(emailFragment) {
   }
 }
 
+function mapCustomer(row) {
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name || "",
+    passwordHash: row.password_hash,
+    createdAt: row.created_at,
+  };
+}
+
+async function getCustomerByEmail(email) {
+  const [rows] = await getPool().execute(
+    "SELECT * FROM customers WHERE email = ? LIMIT 1",
+    [String(email || "").trim().toLowerCase()]
+  );
+  return mapCustomer(rows[0]);
+}
+
+async function getCustomerById(id) {
+  const [rows] = await getPool().execute(
+    "SELECT * FROM customers WHERE id = ? LIMIT 1",
+    [id]
+  );
+  return mapCustomer(rows[0]);
+}
+
+async function createCustomer({ email, passwordHash, name }) {
+  const createdAt = new Date().toISOString();
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  const cleanName = String(name || "").trim();
+  const [result] = await getPool().execute(
+    `INSERT INTO customers (email, password_hash, name, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [cleanEmail, passwordHash, cleanName, createdAt]
+  );
+  return getCustomerById(result.insertId);
+}
+
+function publicCustomer(customer) {
+  if (!customer) return null;
+  return { id: customer.id, email: customer.email, name: customer.name || "" };
+}
+
 /** Close the pool (tests / graceful shutdown). */
 async function closeDb() {
   if (pool) {
@@ -504,4 +602,8 @@ module.exports = {
   listIpCounts,
   resetIpCount,
   deleteOrdersByEmail,
+  getCustomerByEmail,
+  getCustomerById,
+  createCustomer,
+  publicCustomer,
 };

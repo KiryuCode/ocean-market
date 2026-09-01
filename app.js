@@ -180,6 +180,9 @@ app.use((req, res, next) => {
   res.locals.phone = null;
   // Site-wide SEO defaults (routes override with buildSeo("pageKey"))
   res.locals.seo = buildSeo();
+  res.locals.customer = req.session && req.session.customer
+    ? req.session.customer
+    : null;
   next();
 });
 
@@ -319,8 +322,21 @@ function publicUploadPath(filename) {
 
 app.get("/", async (req, res, next) => {
   try {
+    const products = await db.listProducts();
+    const categories = [];
+    const seen = new Map();
+    for (const product of products) {
+      const name = product.category || "Shop";
+      if (!seen.has(name)) {
+        const group = { name, products: [] };
+        seen.set(name, group);
+        categories.push(group);
+      }
+      seen.get(name).products.push(product);
+    }
     res.render("index", {
-      products: await db.listProducts(),
+      products,
+      categories,
       seo: buildSeo("home"),
     });
   } catch (err) {
@@ -535,6 +551,165 @@ app.post("/confirm", async (req, res, next) => {
     next(err);
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Customer accounts (email register + return-customer sign-in)
+// ---------------------------------------------------------------------------
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function renderLogin(res, extra = {}) {
+  return res.render("login", {
+    invalid: false,
+    email: "",
+    seo: buildSeo("login"),
+    ...extra,
+  });
+}
+
+function renderRegister(res, extra = {}) {
+  return res.render("register", {
+    error: null,
+    email: "",
+    name: "",
+    seo: buildSeo("register"),
+    ...extra,
+  });
+}
+
+app.get("/login", (req, res) => {
+  if (req.session && req.session.customer) {
+    return res.redirect("/");
+  }
+  return renderLogin(res);
+});
+
+app.post("/login", async (req, res, next) => {
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+    const customer = await db.getCustomerByEmail(email);
+    let ok = false;
+    if (customer && customer.passwordHash) {
+      ok = await bcrypt.compare(password, customer.passwordHash);
+    } else {
+      await bcrypt.compare(crypto.randomBytes(32).toString("hex"), adminPasswordHash);
+    }
+    if (!ok) {
+      return res.status(401).render("login", {
+        invalid: true,
+        email,
+        seo: buildSeo("login"),
+      });
+    }
+    req.session.customer = db.publicCustomer(customer);
+    return req.session.save((err) => {
+      if (err) return next(err);
+      const nextUrl = String(req.body.next || "/").trim() || "/";
+      return res.redirect(nextUrl.startsWith("/") ? nextUrl : "/");
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/register", (req, res) => {
+  if (req.session && req.session.customer) {
+    return res.redirect("/");
+  }
+  return renderRegister(res);
+});
+
+app.post("/register", async (req, res, next) => {
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+    const name = String(req.body.name || "").trim();
+
+    if (!EMAIL_RE.test(email)) {
+      return res.status(400).render("register", {
+        error: "Enter a valid email address.",
+        email,
+        name,
+        seo: buildSeo("register"),
+      });
+    }
+    if (password.length < 8) {
+      return res.status(400).render("register", {
+        error: "Password must be at least 8 characters.",
+        email,
+        name,
+        seo: buildSeo("register"),
+      });
+    }
+    if (await db.getCustomerByEmail(email)) {
+      return res.status(409).render("register", {
+        error: "An account with that email already exists. Sign in instead.",
+        email,
+        name,
+        seo: buildSeo("register"),
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const customer = await db.createCustomer({ email, passwordHash, name });
+    req.session.customer = db.publicCustomer(customer);
+    return req.session.save((err) => {
+      if (err) return next(err);
+      return res.redirect("/");
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/logout", (req, res, next) => {
+  if (req.session) {
+    req.session.customer = null;
+  }
+  return req.session.save((err) => {
+    if (err) return next(err);
+    return res.redirect("/");
+  });
+});
+
+function renderStaticPage(pageKey, heading, bodyLines) {
+  return (req, res) => {
+    res.render("static", {
+      heading,
+      bodyLines,
+      seo: buildSeo(pageKey),
+    });
+  };
+}
+
+app.get("/about", renderStaticPage("about", "About Ocean Market", [
+  "We are a small reef shop that sells what we would put in our own tanks: planted-tank stems and rhizomes, softies, LPS, SPS, zoas, anemones, a short list of livestock, and the salt and tests that keep them.",
+  "The catalog is not a warehouse dump. Every coral is dipped. Fish sit in quarantine. Plants ship emersed or submerged depending on the species, never as an afterthought in a livestock box.",
+  "If a heat wave or a freeze is sitting on the airport, we hold the order. A late box is better than a cooked one.",
+]));
+app.get("/contact", renderStaticPage("contact", "Contact", [
+  "Questions about a species, a hold, or an order: write the address on your receipt and put the order ID in the subject.",
+  "We read mail in the morning before packs go out. Livestock questions get a real answer, not a script.",
+  "Instagram, YouTube, and Facebook are placeholders in the footer until the shop profiles are live.",
+]));
+app.get("/shipping", renderStaticPage("shipping", "Shipping", [
+  "Live animals and corals leave early in the week, overnight, so nothing sits in a depot over Saturday.",
+  "Plants and dry goods can ship separately if you want them cheaper and slower. We will not mix a clownfish with a four-day ground box.",
+  "Weather holds are not optional. If the route is too hot or too cold, we wait and we tell you. Heat packs and cold packs go in when the forecast earns them.",
+]));
+app.get("/returns", renderStaticPage("returns", "Returns", [
+  "Livestock and coral carry a live-arrival guarantee. Photograph the unopened bag on the day it lands, then write us before you acclimate if something is wrong.",
+  "Unopened dry goods can come back within 30 days for a refund of the item, not the freight.",
+  "Opened salt, used test kits, and livestock that arrived healthy are final sale. We will still help you keep them.",
+]));
+app.get("/care", renderStaticPage("care", "Care guides", [
+  "Plants: most of our stems and rhizomes are low-tech friendly. Never bury an Anubias, Java fern, or Buce rhizome — tie it. Swords and crypts want root tabs. Hairgrass and Monte Carlo want light, or they climb.",
+  "Soft corals and zoas are the honest on-ramp. Moderate light, some flow, and a weekly test. Dip new frags. Palytoxin is not a joke; gloves and no boiling zoa rocks.",
+  "LPS wants stable alkalinity more than fancy lights. Leave space for sweepers. SPS wants that plus strong, messy flow and a lighting schedule you do not keep changing.",
+  "Anemones belong in mature tanks. Quarantine fish. Feed mysis like you mean it. Skim, test, and water-change on a calendar, not a vibe.",
+]));
 
 // ---------------------------------------------------------------------------
 // Admin

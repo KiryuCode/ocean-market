@@ -1,0 +1,13 @@
+<%- include('partials/header') %>
+
+  <article class="story">
+    <p class="story-kicker">Ocean Market</p>
+    <h1 class="page-title"><%= heading %></h1>
+    <div class="story-body">
+      <% bodyLines.forEach(function (line) { %>
+        <p><%= line %></p>
+      <% }) %>
+    </div>
+  </article>
+
+<%- include('partials/footer') %>
