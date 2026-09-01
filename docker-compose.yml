@@ -28,8 +28,9 @@ services:
     environment:
       HOST: "0.0.0.0"
       NODE_ENV: production
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
+      # Do not hardcode the sidecar. Production .env (Aiven avnadmin) must win.
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
     volumes:
       - ./.env:/app/.env:ro
       - ./public/uploads:/app/public/uploads
