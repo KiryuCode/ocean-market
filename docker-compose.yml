@@ -38,6 +38,17 @@ services:
       mysql:
         condition: service_healthy
     restart: unless-stopped
+    # mail.adavis.shop → mailserver container IP on the shared Docker bridge.
+    # Fragile if that IP changes — refresh after `docker network inspect mailserver_default`.
+    extra_hosts:
+      - "mail.adavis.shop:172.20.0.3"
+    networks:
+      - default
+      - mailserver_default
 
 volumes:
   ocean-mysql:
+
+networks:
+  mailserver_default:
+    external: true
