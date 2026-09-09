@@ -335,3 +335,50 @@ body {
 .panel {
   border-color: rgba(212, 162, 74, 0.18);
 }
+
+/* ---------- Order success: click-to-copy ID under banner ---------- */
+.success-banner {
+  text-align: center;
+}
+
+.success-order-id {
+  appearance: none;
+  display: block;
+  width: 100%;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--ocean-teal);
+  font-family: ui-monospace, "Cascadia Code", "SF Mono", monospace;
+  font-size: clamp(1.35rem, 4vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.25;
+  text-align: center;
+  cursor: pointer;
+  word-break: break-all;
+  transition: color 0.2s ease, text-shadow 0.2s ease;
+}
+
+.success-order-id:hover,
+.success-order-id:focus-visible {
+  color: var(--gold);
+  outline: none;
+  text-shadow: 0 0 18px rgba(212, 162, 74, 0.35);
+}
+
+.success-order-id.is-copied {
+  color: var(--ocean-success);
+}
+
+.success-order-hint {
+  text-align: center;
+  margin: 0 0 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ocean-success);
+}
+

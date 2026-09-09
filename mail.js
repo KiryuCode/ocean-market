@@ -175,14 +175,19 @@ function createTransport() {
 }
 
 /**
- * Send HTML order receipt to EMAIL_TO.
+ * Send HTML order receipt.
+ * TO = customer email when present on the order; otherwise EMAIL_TO.
+ * BCC = EMAIL_TO when the customer is TO (so store still gets a copy).
  * Never throws — logs errors so checkout is not blocked.
  */
 async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) {
-  const to = env("EMAIL_TO");
-  if (!to) {
-    console.warn("[mail] EMAIL_TO not set — skipping order confirmation email");
-    return { skipped: true, reason: "EMAIL_TO missing" };
+  const storeInbox = env("EMAIL_TO");
+  const customerEmail = String(order.email || "").trim();
+  if (!storeInbox && !customerEmail) {
+    console.warn(
+      "[mail] No EMAIL_TO and no customer email — skipping order confirmation email"
+    );
+    return { skipped: true, reason: "no recipients" };
   }
   if (!isMailConfigured()) {
     console.warn(
@@ -198,9 +203,16 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
     .map((i) => `${i.name} ×${i.quantity}`)
     .join(", ");
 
+  // Customer on checkout → TO; store inbox → BCC. No customer → store is TO.
+  const to = customerEmail || storeInbox;
+  const bcc =
+    customerEmail && storeInbox && customerEmail.toLowerCase() !== storeInbox.toLowerCase()
+      ? storeInbox
+      : undefined;
+
   try {
     const transport = createTransport();
-    const info = await transport.sendMail({
+    const mailOpts = {
       from,
       to,
       subject: `${STORE_NAME} — Order #${orderId} confirmation`,
@@ -216,9 +228,16 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
         .filter(Boolean)
         .join("\n"),
       html,
-    });
-    console.log(`[mail] Order #${orderId} confirmation sent to ${to}`, info.messageId || "");
-    return { ok: true, messageId: info.messageId };
+    };
+    if (bcc) mailOpts.bcc = bcc;
+
+    const info = await transport.sendMail(mailOpts);
+    console.log(
+      `[mail] Order #${orderId} confirmation sent to ${to}` +
+        (bcc ? ` (bcc ${bcc})` : ""),
+      info.messageId || ""
+    );
+    return { ok: true, messageId: info.messageId, to, bcc: bcc || null };
   } catch (err) {
     console.error(`[mail] Failed to send order #${orderId} email:`, err.message || err);
     return { ok: false, error: err.message || String(err) };

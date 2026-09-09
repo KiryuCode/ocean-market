@@ -1088,7 +1088,8 @@ a:hover {
 .success-banner {
   color: var(--ocean-success);
   font-weight: 600;
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.35rem;
+  text-align: center;
 }
 
 .alert {

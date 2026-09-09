@@ -7,6 +7,15 @@
 
   <div class="panel<%= items && items.length > 1 ? ' panel-wide' : '' %>">
     <p class="success-banner">✓ Your order has been placed successfully.</p>
+    <button
+      type="button"
+      class="success-order-id"
+      id="copy-order-id-top"
+      data-order-id="<%= orderId %>"
+      title="Click to copy order ID"
+      aria-label="Order ID <%= orderId %>. Click to copy."
+    ><%= orderId %></button>
+    <p class="success-order-hint" id="copy-order-hint" hidden>Copied</p>
 
     <% if (items && items.length === 1) { %>
       <div class="product-summary">
@@ -79,19 +88,16 @@
 
   <script>
     (function () {
-      var btn = document.getElementById("copy-order-id");
-      if (!btn) return;
+      var saveBtn = document.getElementById("copy-order-id");
+      var topBtn = document.getElementById("copy-order-id-top");
+      var hint = document.getElementById("copy-order-hint");
+      var orderId =
+        (topBtn && topBtn.getAttribute("data-order-id")) ||
+        (saveBtn && saveBtn.getAttribute("data-order-id")) ||
+        "";
+      if (!orderId) return;
 
-      var defaultLabel = "SAVE IT";
-      var orderId = btn.getAttribute("data-order-id") || "";
-
-      function flash(label) {
-        btn.textContent = label;
-        window.setTimeout(function () {
-          btn.textContent = defaultLabel;
-          btn.classList.remove("is-copied");
-        }, 1600);
-      }
+      var defaultSave = "SAVE IT";
 
       function copyText(text) {
         if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -116,16 +122,53 @@
         });
       }
 
-      btn.addEventListener("click", function () {
+      function flashSave(label) {
+        if (!saveBtn) return;
+        saveBtn.textContent = label;
+        window.setTimeout(function () {
+          saveBtn.textContent = defaultSave;
+          saveBtn.classList.remove("is-copied");
+        }, 1600);
+      }
+
+      function flashTop(ok) {
+        if (!topBtn) return;
+        topBtn.classList.toggle("is-copied", !!ok);
+        if (hint) {
+          hint.hidden = false;
+          hint.textContent = ok ? "Copied" : "Copy failed";
+          window.setTimeout(function () {
+            hint.hidden = true;
+            topBtn.classList.remove("is-copied");
+          }, 1600);
+        } else {
+          window.setTimeout(function () {
+            topBtn.classList.remove("is-copied");
+          }, 1600);
+        }
+      }
+
+      function onCopy(fromSave) {
         copyText(orderId)
           .then(function () {
-            btn.classList.add("is-copied");
-            flash("COPIED!");
+            if (fromSave) {
+              saveBtn && saveBtn.classList.add("is-copied");
+              flashSave("COPIED!");
+            }
+            flashTop(true);
           })
           .catch(function () {
-            flash("COPY FAILED");
+            if (fromSave) flashSave("COPY FAILED");
+            flashTop(false);
           });
-      });
+      }
+
+      if (topBtn) {
+        topBtn.addEventListener("click", function () { onCopy(false); });
+      }
+      if (saveBtn) {
+        saveBtn.addEventListener("click", function () { onCopy(true); });
+      }
     })();
   </script>
 
