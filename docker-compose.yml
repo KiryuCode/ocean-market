@@ -1,24 +1,9 @@
 name: ocean-market
 
-services:
-  mysql:
-    image: mysql:8.0
-    environment:
-      MYSQL_DATABASE: ocean
-      MYSQL_USER: ocean
-      MYSQL_PASSWORD: ocean_pass
-      MYSQL_ROOT_PASSWORD: ocean_root_dev
-    ports:
-      - "127.0.0.1:3307:3306"
-    volumes:
-      - ocean-mysql:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uocean", "-pocean_pass"]
-      interval: 5s
-      timeout: 5s
-      retries: 24
-    restart: unless-stopped
+# Production uses Aiven MySQL via .env (MYSQL_HOST=…aivencloud.com).
+# No local MySQL sidecar — it burned RAM on zen88 and was unused.
 
+services:
   web:
     build: .
     ports:
@@ -28,15 +13,9 @@ services:
     environment:
       HOST: "0.0.0.0"
       NODE_ENV: production
-      # Do not hardcode the sidecar. Production .env (Aiven avnadmin) must win.
-      MYSQL_HOST: ${MYSQL_HOST:-mysql}
-      MYSQL_PORT: ${MYSQL_PORT:-3306}
     volumes:
       - ./.env:/app/.env:ro
       - ./public/uploads:/app/public/uploads
-    depends_on:
-      mysql:
-        condition: service_healthy
     restart: unless-stopped
     # mail.adavis.shop → mailserver container IP on the shared Docker bridge.
     # Fragile if that IP changes — refresh after `docker network inspect mailserver_default`.
@@ -45,9 +24,6 @@ services:
     networks:
       - default
       - mailserver_default
-
-volumes:
-  ocean-mysql:
 
 networks:
   mailserver_default:
