@@ -320,33 +320,6 @@ function getSitemapEntries() {
 // ---------------------------------------------------------------------------
 const DEFAULT_PRODUCTS = [
   {
-    id: "wave-mug",
-    name: "Wave Ceramic Mug",
-    price: 18.0,
-    description:
-      "A hand-glazed mug with soft ocean-wave ridges. Holds 12 oz.",
-    image:
-      "https://images.unsplash.com/photo-1514228742587-6b1558fcca3d?w=600&h=600&fit=crop",
-  },
-  {
-    id: "tide-tote",
-    name: "Tide Canvas Tote",
-    price: 24.0,
-    description:
-      "Sturdy canvas tote in deep navy. Perfect for market runs or the beach.",
-    image:
-      "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?w=600&h=600&fit=crop",
-  },
-  {
-    id: "coral-candle",
-    name: "Coral Reef Candle",
-    price: 22.0,
-    description:
-      "Soy wax candle with notes of sea salt, driftwood, and soft citrus.",
-    image:
-      "https://images.unsplash.com/photo-1602606973294-e0c1f3c3c8f0?w=600&h=600&fit=crop",
-  },
-  {
     id: "basil",
     name: "basil",
     price: 9.99,
