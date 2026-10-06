@@ -1,0 +1,10 @@
+Product image credits
+=====================
+
+purple-coneflower.jpg
+  Subject: Echinacea purpurea (purple coneflower), cultivar 'Bravado'
+  Author:  Wilfredor (Wikimedia Commons)
+  Source:  https://commons.wikimedia.org/wiki/File:Echinacea_purpurea_L._Moench,_Bravado._Jardin_universitaire_Roger-Van_den_Hende_48.jpg
+  License: CC0 1.0 Universal (public domain dedication)
+           https://creativecommons.org/publicdomain/zero/1.0/
+  Edits:   Cropped to square and resized to 600x600.

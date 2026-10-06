@@ -346,6 +346,15 @@ const DEFAULT_PRODUCTS = [
     image:
       "https://images.unsplash.com/photo-1556682851-c0583ebe6f2f?w=600&h=600&fit=crop",
   },
+  {
+    id: "purple-coneflower",
+    name: "Purple Coneflower",
+    price: 8.99,
+    description:
+      "Echinacea purpurea, a perennial native to Ohio — full sun, drought tolerant, attracts pollinators, and blooms all summer.",
+    // CC0 photo by Wilfredor via Wikimedia Commons (see public/images/products/CREDITS.txt)
+    image: "/images/products/purple-coneflower.jpg",
+  },
 ];
 
 /** Fallback image when a new product is added without a photo */
