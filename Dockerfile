@@ -1,4 +1,14 @@
+FROM node:22.23.4-trixie-slim AS deps
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
 FROM node:22.23.4-trixie-slim
+
+# Strip the package managers from the runtime image (not needed to run; their bundled deps carry CVEs)
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 WORKDIR /app
 
@@ -6,8 +16,8 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
 
 COPY app.js cart.js config.js csrf.js db.js mail.js ./
 COPY views ./views
