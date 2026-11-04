@@ -39,13 +39,17 @@ CREATE TABLE IF NOT EXISTS products (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS orders (
-  order_id     INT          NOT NULL AUTO_INCREMENT,
-  product_id   TEXT         NOT NULL,
-  product_name TEXT         NOT NULL,
-  email        VARCHAR(255) NULL,
-  phone        VARCHAR(64)  NULL,
-  ip_address   VARCHAR(64)  NOT NULL,
-  created_at   VARCHAR(64)  NOT NULL,
+  order_id         INT          NOT NULL AUTO_INCREMENT,
+  product_id       TEXT         NOT NULL,
+  product_name     TEXT         NOT NULL,
+  email            VARCHAR(255) NULL,
+  phone            VARCHAR(64)  NULL,
+  ip_address       VARCHAR(64)  NOT NULL,
+  created_at       VARCHAR(64)  NOT NULL,
+  status           VARCHAR(32)  NOT NULL DEFAULT 'unshipped',
+  tracking_number  VARCHAR(128) NULL,
+  carrier          VARCHAR(64)  NULL,
+  shipped_at       VARCHAR(64)  NULL,
   PRIMARY KEY (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

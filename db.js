@@ -3,7 +3,8 @@
  *
  * Tables:
  *   - products:        catalog (editable from admin, with photo uploads)
- *   - orders:          order_id (integer, shown as 0001), product ordered, email, timestamp
+ *   - orders:          order_id (integer, shown as 0001), product ordered, email, timestamp,
+ *                      status, tracking number, carrier, shipped timestamp
  *   - ip_order_counts: ip_address, order_count  (separate table for the 20/order limit)
  *
  * Connection settings come from .env (MYSQL_*). Create the database first with:
@@ -121,16 +122,31 @@ async function initDb() {
 
   await p.query(`
     CREATE TABLE IF NOT EXISTS orders (
-      order_id     INT          NOT NULL AUTO_INCREMENT,
-      product_id   TEXT         NOT NULL,
-      product_name TEXT         NOT NULL,
-      email        VARCHAR(255) NULL,
-      phone        VARCHAR(64)  NULL,
-      ip_address   VARCHAR(64)  NOT NULL,
-      created_at   VARCHAR(64)  NOT NULL,
+      order_id         INT          NOT NULL AUTO_INCREMENT,
+      product_id       TEXT         NOT NULL,
+      product_name     TEXT         NOT NULL,
+      email            VARCHAR(255) NULL,
+      phone            VARCHAR(64)  NULL,
+      ip_address       VARCHAR(64)  NOT NULL,
+      created_at       VARCHAR(64)  NOT NULL,
+      status           VARCHAR(32)  NOT NULL DEFAULT 'unshipped',
+      tracking_number  VARCHAR(128) NULL,
+      carrier          VARCHAR(64)  NULL,
+      shipped_at       VARCHAR(64)  NULL,
       PRIMARY KEY (order_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  // Existing databases keep their rows; add shipping columns only when missing.
+  await ensureColumn(
+    p,
+    "orders",
+    "status",
+    "VARCHAR(32) NOT NULL DEFAULT 'unshipped'"
+  );
+  await ensureColumn(p, "orders", "tracking_number", "VARCHAR(128) NULL");
+  await ensureColumn(p, "orders", "carrier", "VARCHAR(64) NULL");
+  await ensureColumn(p, "orders", "shipped_at", "VARCHAR(64) NULL");
 
   await p.query(`
     CREATE TABLE IF NOT EXISTS ip_order_counts (
@@ -383,12 +399,236 @@ async function createOrder({ productId, productName, email, phone, ipAddress }) 
   }
 }
 
+function normalizeOrderStatus(row) {
+  const raw = String((row && row.status) || "")
+    .trim()
+    .toLowerCase();
+  if (raw === "shipped") return "shipped";
+  if (row && row.shipped_at && String(row.shipped_at).trim()) return "shipped";
+  return "unshipped";
+}
+
 function mapOrder(row) {
   if (!row) return undefined;
   return {
     ...row,
     order_id_display: formatOrderId(row.order_id),
+    status: normalizeOrderStatus(row),
+    tracking_number: row.tracking_number ? String(row.tracking_number) : null,
+    carrier: row.carrier ? String(row.carrier) : null,
+    shipped_at: row.shipped_at ? String(row.shipped_at) : null,
   };
+}
+
+const TRACKING_MAX = 128;
+const CARRIER_MAX = 64;
+
+function shipError(message, code) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+/**
+ * Split the stored product_id / product_name strings into line tokens.
+ * product_id looks like "wave-mug×1, tide-tote×2".
+ */
+function parseOrderItemTokens(order) {
+  const idTokens = String((order && order.product_id) || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const nameTokens = String((order && order.product_name) || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const items = [];
+  for (let index = 0; index < idTokens.length; index += 1) {
+    const token = idTokens[index];
+    const match = token.match(/^(.+?)(?:×|x)(\d+)$/i);
+    const productId = (match ? match[1] : token).trim();
+    const quantity = match ? Math.max(1, parseInt(match[2], 10) || 1) : 1;
+    if (!productId) continue;
+    items.push({
+      productId,
+      quantity,
+      nameToken: nameTokens[index] || "",
+    });
+  }
+  return items;
+}
+
+/**
+ * Mark an order shipped, store tracking, and decrement product stock.
+ * One transaction. Shipping an order that is already shipped is a no-op
+ * (inventory is not reduced again). Stock is never taken below zero:
+ * the whole shipment rolls back and an INSUFFICIENT_STOCK error is thrown.
+ */
+async function shipOrder({ orderId, trackingNumber, carrier }) {
+  const tracking = String(trackingNumber == null ? "" : trackingNumber).trim();
+  const carrierRaw = String(carrier == null ? "" : carrier).trim();
+
+  if (!tracking) {
+    throw shipError(
+      "A tracking number is required. Nothing was changed.",
+      "VALIDATION"
+    );
+  }
+  if (tracking.length > TRACKING_MAX) {
+    throw shipError(
+      `Tracking number must be ${TRACKING_MAX} characters or fewer. Nothing was changed.`,
+      "VALIDATION"
+    );
+  }
+  if (carrierRaw.length > CARRIER_MAX) {
+    throw shipError(
+      `Carrier must be ${CARRIER_MAX} characters or fewer. Nothing was changed.`,
+      "VALIDATION"
+    );
+  }
+
+  const n = parseInt(String(orderId == null ? "" : orderId).trim(), 10);
+  if (!Number.isFinite(n) || n < 1) {
+    throw shipError("Select an order to ship. Nothing was changed.", "VALIDATION");
+  }
+
+  const carrierValue = carrierRaw || null;
+  const conn = await getPool().getConnection();
+  let started = false;
+
+  try {
+    await conn.beginTransaction();
+    started = true;
+
+    const [rows] = await conn.execute(
+      "SELECT * FROM orders WHERE order_id = ? FOR UPDATE",
+      [n]
+    );
+    const row = rows[0];
+    if (!row) {
+      throw shipError("That order was not found. Nothing was changed.", "NOT_FOUND");
+    }
+
+    const current = mapOrder(row);
+    if (current.status === "shipped") {
+      await conn.rollback();
+      started = false;
+      return { alreadyShipped: true, order: current };
+    }
+
+    const tokens = parseOrderItemTokens(row);
+    if (!tokens.length) {
+      throw shipError(
+        `Order ${current.order_id_display} has no items to ship. Nothing was changed.`,
+        "EMPTY"
+      );
+    }
+
+    const needed = new Map();
+    for (const token of tokens) {
+      needed.set(token.productId, (needed.get(token.productId) || 0) + token.quantity);
+    }
+
+    const problems = [];
+    const locked = [];
+    for (const productId of [...needed.keys()].sort()) {
+      const [prows] = await conn.execute(
+        "SELECT id, name, qty_available FROM products WHERE id = ? FOR UPDATE",
+        [productId]
+      );
+      const want = needed.get(productId);
+      if (!prows[0]) {
+        problems.push(`${productId} (qty ${want}) is not in the catalog`);
+        continue;
+      }
+      const have = Number(prows[0].qty_available);
+      const available = Number.isFinite(have) ? have : 0;
+      if (available < want) {
+        problems.push(
+          `${prows[0].name} needs ${want} but only ${available} ${
+            available === 1 ? "is" : "are"
+          } available`
+        );
+      } else {
+        locked.push({ productId, want, name: prows[0].name });
+      }
+    }
+
+    if (problems.length) {
+      throw shipError(
+        `Cannot ship order ${current.order_id_display}. ${problems.join(
+          "; "
+        )}. No inventory was changed.`,
+        "INSUFFICIENT_STOCK"
+      );
+    }
+
+    for (const item of locked) {
+      const [result] = await conn.execute(
+        `UPDATE products
+            SET qty_available = qty_available - ?
+          WHERE id = ?
+            AND qty_available >= ?`,
+        [item.want, item.productId, item.want]
+      );
+      if (!result.affectedRows) {
+        throw shipError(
+          `Cannot ship order ${current.order_id_display}. Stock for ${item.name} changed before it could be reserved. No inventory was changed.`,
+          "INSUFFICIENT_STOCK"
+        );
+      }
+    }
+
+    const shippedAt = new Date()
+      .toISOString()
+      .replace("T", " ")
+      .replace(/\.\d{3}Z$/, " UTC");
+
+    const [updated] = await conn.execute(
+      `UPDATE orders
+          SET status = 'shipped',
+              tracking_number = ?,
+              carrier = ?,
+              shipped_at = ?
+        WHERE order_id = ?
+          AND (status IS NULL OR LOWER(status) <> 'shipped')
+          AND (shipped_at IS NULL OR shipped_at = '')`,
+      [tracking, carrierValue, shippedAt, n]
+    );
+
+    if (!updated.affectedRows) {
+      throw shipError(
+        `Order ${current.order_id_display} is already shipped. Inventory was not changed.`,
+        "ALREADY_SHIPPED"
+      );
+    }
+
+    await conn.commit();
+    started = false;
+
+    return {
+      alreadyShipped: false,
+      order: mapOrder({
+        ...row,
+        status: "shipped",
+        tracking_number: tracking,
+        carrier: carrierValue,
+        shipped_at: shippedAt,
+      }),
+    };
+  } catch (err) {
+    if (started) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error("Ship rollback failed:", rollbackErr);
+      }
+    }
+    throw err;
+  } finally {
+    conn.release();
+  }
 }
 
 async function listOrders() {
@@ -419,36 +659,23 @@ async function getOrder(orderId) {
 async function getOrderLineItems(order) {
   if (!order) return [];
 
-  const idTokens = String(order.product_id || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const nameTokens = String(order.product_name || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
+  const tokens = parseOrderItemTokens(order);
   const items = [];
-  for (let index = 0; index < idTokens.length; index += 1) {
-    const token = idTokens[index];
-    const match = token.match(/^(.+?)(?:×|x)(\d+)$/i);
-    const productId = (match ? match[1] : token).trim();
-    const quantity = match ? Math.max(1, parseInt(match[2], 10) || 1) : 1;
-    const product = await getProduct(productId);
+  for (const token of tokens) {
+    const product = await getProduct(token.productId);
 
-    let name =
-      (product && product.name) || nameTokens[index] || productId;
+    let name = (product && product.name) || token.nameToken || token.productId;
     name = String(name)
       .replace(/\s*×\s*\d+\s*$/, "")
       .trim();
 
     const unitPrice = product ? product.price : null;
-    const lineTotal = unitPrice !== null ? unitPrice * quantity : null;
+    const lineTotal = unitPrice !== null ? unitPrice * token.quantity : null;
 
     items.push({
-      productId,
+      productId: token.productId,
       name,
-      quantity,
+      quantity: token.quantity,
       description: product ? product.description : "",
       image: product ? product.image : null,
       unitPrice,
@@ -457,6 +684,53 @@ async function getOrderLineItems(order) {
     });
   }
   return items;
+}
+
+/**
+ * Orders for the Ship tab: unshipped first, then newest order id.
+ * Each row includes line items, a catalog total when every price is known,
+ * and the customer name when the email matches an account.
+ */
+async function listShipQueue() {
+  const orders = await listOrders();
+  const nameCache = new Map();
+  const queue = [];
+
+  for (const order of orders) {
+    const lineItems = await getOrderLineItems(order);
+    const subtotal = orderSubtotal(lineItems);
+    const hasPrices =
+      lineItems.length > 0 &&
+      lineItems.every((item) => item.unitPrice !== null);
+
+    const email = String(order.email || "").trim();
+    let customerName = "";
+    if (email) {
+      const key = email.toLowerCase();
+      if (!nameCache.has(key)) {
+        const customer = await getCustomerByEmail(key);
+        nameCache.set(key, customer && customer.name ? customer.name : "");
+      }
+      customerName = nameCache.get(key) || "";
+    }
+
+    queue.push({
+      ...order,
+      lineItems,
+      subtotal,
+      hasPrices,
+      customerName,
+    });
+  }
+
+  queue.sort((a, b) => {
+    const rankA = a.status === "shipped" ? 1 : 0;
+    const rankB = b.status === "shipped" ? 1 : 0;
+    if (rankA !== rankB) return rankA - rankB;
+    return Number(b.order_id) - Number(a.order_id);
+  });
+
+  return queue;
 }
 
 function orderSubtotal(lineItems) {
@@ -596,6 +870,8 @@ module.exports = {
   canPlaceOrder,
   createOrder,
   listOrders,
+  listShipQueue,
+  shipOrder,
   getOrder,
   getOrderLineItems,
   orderSubtotal,

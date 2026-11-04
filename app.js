@@ -312,6 +312,48 @@ function adminUrl({ hash = "orders" } = {}) {
   return url;
 }
 
+async function renderAdminPage(req, res, activeSection) {
+  const shipFlash =
+    req.session && req.session.adminFlash ? req.session.adminFlash : null;
+  if (req.session && req.session.adminFlash) {
+    delete req.session.adminFlash;
+  }
+
+  const [orders, shipOrders, ipCounts, products] = await Promise.all([
+    db.listOrders(),
+    db.listShipQueue(),
+    db.listIpCounts(),
+    db.listProducts(),
+  ]);
+
+  res.render("admin", {
+    orders,
+    shipOrders,
+    ipCounts,
+    products,
+    activeSection: activeSection || "orders",
+    shipFlash,
+    seo: buildSeo("admin"),
+  });
+}
+
+function shipFlashFromError(err) {
+  const code = err && err.code;
+  const safe =
+    code === "VALIDATION" ||
+    code === "NOT_FOUND" ||
+    code === "EMPTY" ||
+    code === "INSUFFICIENT_STOCK" ||
+    code === "ALREADY_SHIPPED";
+  return {
+    kind: code === "ALREADY_SHIPPED" ? "warning" : "error",
+    message:
+      safe && err.message
+        ? err.message
+        : "Could not ship that order. Nothing was changed.",
+  };
+}
+
 function publicUploadPath(filename) {
   return `/uploads/products/${filename}`;
 }
@@ -724,12 +766,7 @@ app.get("/admin", async (req, res, next) => {
       });
     }
 
-    res.render("admin", {
-      orders: await db.listOrders(),
-      ipCounts: await db.listIpCounts(),
-      products: await db.listProducts(),
-      seo: buildSeo("admin"),
-    });
+    await renderAdminPage(req, res, "orders");
   } catch (err) {
     next(err);
   }
@@ -762,6 +799,68 @@ app.post("/admin/logout", (req, res, next) => {
     if (err) return next(err);
     return res.redirect("/admin");
   });
+});
+
+/** Ship tab: same admin session as the rest of /admin. */
+app.get("/admin/ship", async (req, res, next) => {
+  try {
+    if (!isAdminSession(req)) {
+      return res.render("admin_login", {
+        invalidPassword: false,
+        seo: buildSeo("admin"),
+      });
+    }
+    await renderAdminPage(req, res, "ship");
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Record tracking and mark one order shipped.
+ * Stock is reduced inside db.shipOrder; a second submit does not reduce it again.
+ */
+app.post("/admin/ship", async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+
+    try {
+      const result = await db.shipOrder({
+        orderId: req.body && req.body.order_id,
+        trackingNumber: req.body && req.body.tracking_number,
+        carrier: req.body && req.body.carrier,
+      });
+      const order = result.order;
+      const display = order.order_id_display;
+      if (result.alreadyShipped) {
+        const tracking = order.tracking_number
+          ? ` Tracking ${order.tracking_number}.`
+          : "";
+        req.session.adminFlash = {
+          kind: "warning",
+          message: `Order ${display} is already shipped.${tracking} Inventory was not changed.`,
+        };
+      } else {
+        const carrier = order.carrier ? ` (${order.carrier})` : "";
+        req.session.adminFlash = {
+          kind: "success",
+          message: `Shipped order ${display}. Tracking ${order.tracking_number}${carrier}. Stock was reduced for each item on this order.`,
+        };
+      }
+    } catch (err) {
+      if (!err || err.code !== "VALIDATION") {
+        console.error("Ship order failed:", err);
+      }
+      req.session.adminFlash = shipFlashFromError(err);
+    }
+
+    return req.session.save((saveErr) => {
+      if (saveErr) return next(saveErr);
+      return res.redirect("/admin/ship");
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /** Reset one IP order counter (or all if ip is empty / "all") */
