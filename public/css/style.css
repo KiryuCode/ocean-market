@@ -619,6 +619,211 @@ a:hover {
   outline-offset: -2px;
 }
 
+/* ---------- Ship tab ---------- */
+
+.ship-lead {
+  margin: 0 0 1rem;
+  color: var(--ocean-mist);
+  font-size: 0.9rem;
+}
+
+.ship-table {
+  min-width: 44rem;
+}
+
+.ship-row {
+  cursor: pointer;
+}
+
+.ship-table tr:has(input:checked) td {
+  background: rgba(26, 140, 255, 0.12);
+}
+
+.ship-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+
+.ship-select input {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--ocean-accent);
+}
+
+.ship-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ship-items li + li {
+  margin-top: 0.15rem;
+}
+
+.ship-meta {
+  color: var(--ocean-mist);
+  font-size: 0.75rem;
+}
+
+.tracking-number {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.status-shipped {
+  background: rgba(61, 214, 140, 0.15);
+  border: 1px solid rgba(61, 214, 140, 0.4);
+  color: var(--ocean-success);
+}
+
+.status-unshipped {
+  background: rgba(255, 196, 87, 0.14);
+  border: 1px solid rgba(255, 196, 87, 0.45);
+  color: #ffd58a;
+}
+
+.ship-actions {
+  position: sticky;
+  bottom: 0.5rem;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding: 0.75rem;
+  background: rgba(15, 39, 68, 0.94);
+  border: 1px solid rgba(143, 179, 217, 0.2);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.ship-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ship-hint {
+  margin: 0;
+  color: var(--ocean-mist);
+  font-size: 0.9rem;
+}
+
+.ship-dialog {
+  border: 1px solid rgba(143, 179, 217, 0.28);
+  border-radius: 12px;
+  background: var(--ocean-mid);
+  color: var(--ocean-foam);
+  padding: 1.25rem 1.25rem 1rem;
+  width: min(28rem, calc(100vw - 1.5rem));
+  max-height: calc(100vh - 2rem);
+  box-shadow: var(--shadow);
+}
+
+.ship-dialog::backdrop {
+  background: rgba(5, 12, 24, 0.72);
+}
+
+.ship-dialog h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1.2rem;
+}
+
+@media (max-width: 760px) {
+  .ship-table-wrap {
+    overflow: visible;
+  }
+
+  .ship-table {
+    min-width: 0;
+  }
+
+  .ship-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .ship-table,
+  .ship-table tbody,
+  .ship-table tr,
+  .ship-table td {
+    display: block;
+    width: auto;
+  }
+
+  .ship-table tr.ship-row {
+    margin: 0 0 0.75rem;
+    padding: 0.35rem 0.75rem 0.55rem;
+    border: 1px solid rgba(143, 179, 217, 0.2);
+    border-radius: 12px;
+    background: rgba(10, 22, 40, 0.35);
+  }
+
+  .ship-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.75rem;
+    border-bottom: none;
+    padding: 0.4rem 0;
+    text-align: right;
+  }
+
+  .ship-table td::before {
+    content: attr(data-label);
+    flex: 0 0 38%;
+    text-align: left;
+    color: var(--ocean-mist);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding-top: 0.15rem;
+  }
+
+  .ship-table tr:hover td,
+  .ship-table tr:has(input:checked) td {
+    background: transparent;
+  }
+
+  .ship-table tr:has(input:checked) {
+    border-color: var(--ocean-accent);
+    box-shadow: inset 0 0 0 1px var(--ocean-accent);
+  }
+
+  .ship-items {
+    text-align: right;
+  }
+
+  .ship-actions .btn,
+  .ship-dialog .actions .btn {
+    width: 100%;
+  }
+}
+
 /* ---------- Receipt / invoice ---------- */
 
 .receipt-toolbar {
@@ -745,6 +950,12 @@ a:hover {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.receipt-badge-pending {
+  background: rgba(255, 196, 87, 0.14);
+  border-color: rgba(255, 196, 87, 0.45);
+  color: #ffd58a;
 }
 
 .receipt-lines {
@@ -1103,6 +1314,12 @@ a:hover {
   background: rgba(255, 107, 138, 0.12);
   border: 1px solid rgba(255, 107, 138, 0.4);
   color: #ffb3c1;
+}
+
+.alert-warning {
+  background: rgba(255, 196, 87, 0.12);
+  border: 1px solid rgba(255, 196, 87, 0.45);
+  color: #ffd58a;
 }
 
 /* ---------- Admin ---------- */

@@ -1,21 +1,31 @@
 <%- include('partials/header') %>
+<%
+  var adminSection = (typeof activeSection !== 'undefined' && activeSection) ? String(activeSection) : 'orders';
+  var allowedAdminSections = { orders: 1, ship: 1, products: 1, 'add-product': 1, 'ip-counts': 1 };
+  if (!allowedAdminSections[adminSection]) adminSection = 'orders';
+  var shipQueue = (typeof shipOrders !== 'undefined' && shipOrders) ? shipOrders : [];
+  var shipNotice = (typeof shipFlash !== 'undefined' && shipFlash) ? shipFlash : null;
+  var shipNoticeKind = shipNotice && (shipNotice.kind === 'success' || shipNotice.kind === 'warning') ? shipNotice.kind : 'error';
+  var unshippedCount = shipQueue.filter(function (order) { return order.status !== 'shipped'; }).length;
+%>
 
   <h1 class="page-title">Admin</h1>
   <p class="page-sub">
     Manage products, pricing, stock, and orders stored in <code>local.db</code>.
   </p>
 
-  <nav class="admin-nav" aria-label="Admin sections">
-    <button type="button" class="admin-nav-link is-active" data-section="orders">Orders</button>
-    <button type="button" class="admin-nav-link" data-section="products">Products</button>
-    <button type="button" class="admin-nav-link" data-section="add-product">Add product</button>
-    <button type="button" class="admin-nav-link" data-section="ip-counts">IP counts</button>
+  <nav class="admin-nav" aria-label="Admin sections" data-section="<%= adminSection %>">
+    <button type="button" class="admin-nav-link<%= adminSection === 'orders' ? ' is-active' : '' %>" data-section="orders" aria-current="<%= adminSection === 'orders' ? 'page' : 'false' %>">Orders</button>
+    <button type="button" class="admin-nav-link<%= adminSection === 'ship' ? ' is-active' : '' %>" data-section="ship" aria-current="<%= adminSection === 'ship' ? 'page' : 'false' %>">Ship</button>
+    <button type="button" class="admin-nav-link<%= adminSection === 'products' ? ' is-active' : '' %>" data-section="products" aria-current="<%= adminSection === 'products' ? 'page' : 'false' %>">Products</button>
+    <button type="button" class="admin-nav-link<%= adminSection === 'add-product' ? ' is-active' : '' %>" data-section="add-product" aria-current="<%= adminSection === 'add-product' ? 'page' : 'false' %>">Add product</button>
+    <button type="button" class="admin-nav-link<%= adminSection === 'ip-counts' ? ' is-active' : '' %>" data-section="ip-counts" aria-current="<%= adminSection === 'ip-counts' ? 'page' : 'false' %>">IP counts</button>
   </nav>
 
   <div class="admin-sections">
 
     <!-- Orders -->
-    <section class="panel panel-wide admin-panel is-active" id="orders" data-section="orders">
+    <section class="panel panel-wide admin-panel<%= adminSection === 'orders' ? ' is-active' : '' %>" id="orders" data-section="orders"<% if (adminSection !== 'orders') { %> hidden<% } %>>
       <h2 class="section-title">Orders (<%= orders.length %>)</h2>
       <% if (orders.length) { %>
         <div class="table-wrap">
@@ -60,8 +70,167 @@
       <% } %>
     </section>
 
+    <!-- Ship -->
+    <section class="panel panel-wide admin-panel<%= adminSection === 'ship' ? ' is-active' : '' %>" id="ship" data-section="ship"<% if (adminSection !== 'ship') { %> hidden<% } %>>
+      <h2 class="section-title">Ship (<%= unshippedCount %> unshipped)</h2>
+      <p class="ship-lead">
+        Unshipped orders are listed first. Select one, click Ship, and enter a tracking number.
+        Stock is reduced by the ordered quantity once. Shipping the same order again does not reduce it again.
+      </p>
+
+      <% if (shipNotice && shipNotice.message) { %>
+        <div class="alert alert-<%= shipNoticeKind %>" role="alert"><%= shipNotice.message %></div>
+      <% } %>
+
+      <% if (shipQueue.length) { %>
+        <form method="post" action="/admin/ship" id="ship-form">
+          <%- include('partials/csrf') %>
+          <div class="table-wrap ship-table-wrap">
+            <table class="data ship-table">
+              <thead>
+                <tr>
+                  <th scope="col">Select</th>
+                  <th scope="col">Order</th>
+                  <th scope="col">Date</th>
+                  <th scope="col">Customer</th>
+                  <th scope="col">Items</th>
+                  <th scope="col">Total</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Tracking</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% shipQueue.forEach(function (order) { %>
+                  <tr class="ship-row<%= order.status === 'shipped' ? ' is-shipped' : '' %>">
+                    <td data-label="Select">
+                      <% if (order.status === 'shipped') { %>
+                        <span class="ship-meta">—</span>
+                      <% } else { %>
+                        <label class="ship-select">
+                          <input
+                            type="radio"
+                            name="order_id"
+                            value="<%= order.order_id %>"
+                            data-order-label="<%= order.order_id_display %>"
+                            aria-label="Select order <%= order.order_id_display %>"
+                          >
+                        </label>
+                      <% } %>
+                    </td>
+                    <td data-label="Order" class="mono">
+                      <a href="/admin/orders/<%= order.order_id %>"><%= order.order_id_display %></a>
+                    </td>
+                    <td data-label="Date" class="mono"><%= order.created_at %></td>
+                    <td data-label="Customer">
+                      <% if (order.customerName) { %>
+                        <div><%= order.customerName %></div>
+                      <% } %>
+                      <% if (order.email) { %>
+                        <div class="<%= order.customerName ? 'ship-meta' : '' %>"><%= order.email %></div>
+                      <% } else if (!order.customerName) { %>
+                        <div>—</div>
+                      <% } %>
+                      <% if (order.phone) { %>
+                        <div class="ship-meta mono"><%= order.phone %></div>
+                      <% } %>
+                    </td>
+                    <td data-label="Items">
+                      <% if (order.lineItems && order.lineItems.length) { %>
+                        <ul class="ship-items">
+                          <% order.lineItems.forEach(function (item) { %>
+                            <li><%= item.name %> × <%= item.quantity %></li>
+                          <% }) %>
+                        </ul>
+                      <% } else { %>
+                        <%= order.product_name || '—' %>
+                      <% } %>
+                    </td>
+                    <td data-label="Total">
+                      <% if (order.hasPrices) { %>
+                        $<%= formatPrice(order.subtotal) %>
+                      <% } else { %>
+                        <span title="Price unavailable because a product is no longer in the catalog">—</span>
+                      <% } %>
+                    </td>
+                    <td data-label="Status">
+                      <% if (order.status === 'shipped') { %>
+                        <span class="status-badge status-shipped">Shipped</span>
+                      <% } else { %>
+                        <span class="status-badge status-unshipped">Unshipped</span>
+                      <% } %>
+                    </td>
+                    <td data-label="Tracking">
+                      <% if (order.tracking_number) { %>
+                        <div class="tracking-number"><%= order.tracking_number %></div>
+                        <% if (order.carrier || order.shipped_at) { %>
+                          <div class="ship-meta">
+                            <% if (order.carrier) { %><%= order.carrier %><% } %><% if (order.carrier && order.shipped_at) { %> · <% } %><% if (order.shipped_at) { %><%= order.shipped_at %><% } %>
+                          </div>
+                        <% } %>
+                      <% } else { %>
+                        —
+                      <% } %>
+                    </td>
+                  </tr>
+                <% }) %>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="ship-actions">
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="ship-start"
+              <% if (!unshippedCount) { %>disabled<% } %>
+            >Ship</button>
+            <p id="ship-hint" class="ship-hint" role="status"></p>
+          </div>
+
+          <dialog id="ship-dialog" class="ship-dialog" aria-labelledby="ship-dialog-title">
+            <h3 id="ship-dialog-title">Ship order <span id="ship-dialog-order"></span></h3>
+            <p class="ship-lead">
+              Tracking number is required. Carrier is optional.
+              Confirming reduces stock for this order a single time.
+            </p>
+            <div class="form-group">
+              <label for="tracking_number">Tracking number</label>
+              <input
+                type="text"
+                id="tracking_number"
+                name="tracking_number"
+                maxlength="128"
+                autocomplete="off"
+                placeholder="1Z999…"
+              >
+            </div>
+            <div class="form-group">
+              <label for="carrier">
+                Carrier
+                <span style="font-weight:400;color:var(--ocean-mist)">(optional)</span>
+              </label>
+              <input
+                type="text"
+                id="carrier"
+                name="carrier"
+                maxlength="64"
+                autocomplete="off"
+                placeholder="UPS, USPS, FedEx"
+              >
+            </div>
+            <div class="actions">
+              <button type="submit" class="btn btn-primary">Ship order</button>
+              <button type="button" class="btn btn-secondary" id="ship-cancel">Cancel</button>
+            </div>
+          </dialog>
+        </form>
+      <% } else { %>
+        <p class="empty-state">No orders to ship yet.</p>
+      <% } %>
+    </section>
+
     <!-- Products -->
-    <section class="panel panel-wide admin-panel" id="products" data-section="products" hidden>
+    <section class="panel panel-wide admin-panel<%= adminSection === 'products' ? ' is-active' : '' %>" id="products" data-section="products"<% if (adminSection !== 'products') { %> hidden<% } %>>
       <h2 class="section-title">Products (<%= products.length %>)</h2>
       <p style="margin:0 0 1rem;color:var(--ocean-mist);font-size:0.9rem;">
         Update price and quantity available, or upload a new photo.
@@ -156,7 +325,7 @@
     </section>
 
     <!-- Add product -->
-    <section class="panel panel-wide admin-panel" id="add-product" data-section="add-product" hidden>
+    <section class="panel panel-wide admin-panel<%= adminSection === 'add-product' ? ' is-active' : '' %>" id="add-product" data-section="add-product"<% if (adminSection !== 'add-product') { %> hidden<% } %>>
       <h2 class="section-title">Add new product</h2>
       <form
         method="post"
@@ -210,7 +379,7 @@
     </section>
 
     <!-- IP counts -->
-    <section class="panel panel-wide admin-panel" id="ip-counts" data-section="ip-counts" hidden>
+    <section class="panel panel-wide admin-panel<%= adminSection === 'ip-counts' ? ' is-active' : '' %>" id="ip-counts" data-section="ip-counts"<% if (adminSection !== 'ip-counts') { %> hidden<% } %>>
       <div class="section-heading-row">
         <h2 class="section-title">IP order counts</h2>
         <% if (ipCounts.length) { %>

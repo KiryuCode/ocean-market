@@ -47,8 +47,22 @@
         </dl>
       </div>
       <div class="receipt-status">
-        <span class="receipt-badge">Confirmed</span>
-        <p>Thank you for your order. Keep this receipt for your records.</p>
+        <% if (order.status === 'shipped') { %>
+          <span class="receipt-badge">Shipped</span>
+          <p>
+            <% if (order.tracking_number) { %>
+              Tracking <span class="mono"><%= order.tracking_number %></span><% if (order.carrier) { %> · <%= order.carrier %><% } %>
+            <% } else { %>
+              This order is marked shipped.
+            <% } %>
+            <% if (order.shipped_at) { %>
+              <br><span class="mono"><%= order.shipped_at %></span>
+            <% } %>
+          </p>
+        <% } else { %>
+          <span class="receipt-badge receipt-badge-pending">Unshipped</span>
+          <p>Confirmed and waiting to ship. <a href="/admin/ship">Open the Ship tab</a> to add tracking and reduce stock.</p>
+        <% } %>
       </div>
     </section>
 
