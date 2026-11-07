@@ -6,6 +6,7 @@
  */
 
 const nodemailer = require("nodemailer");
+const db = require("./db");
 const { STORE_NAME, STORE_TAGLINE, formatPrice } = require("./config");
 
 function env(name, fallback = "") {
@@ -244,8 +245,85 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
   }
 }
 
+function retryDelayMs(attempts, settings) {
+  const shift = Math.max(0, Number(attempts) - 1);
+  const delay = settings.baseMs * Math.pow(2, Math.min(shift, 10));
+  return Math.min(settings.maxDelayMs, delay);
+}
+
+/**
+ * Send due outbox rows. Each order has one row. A claim commits before SMTP,
+ * and a second drain sees the row as sending or sent, so the message goes
+ * out once. Failures stay pending until the attempt cap, then dead.
+ */
+async function drainOutbox(options = {}) {
+  const settings = db.mailRetrySettings();
+  const limit = Math.max(1, Math.min(20, Number(options.limit) || 5));
+  const due = await db.listDueMail(limit, settings);
+  const results = [];
+  for (const row of due) {
+    results.push(await deliverOutboxRow(row, settings));
+  }
+  return results;
+}
+
+async function deliverOutboxRow(row, settings) {
+  const claimed = await db.claimMailOutbox(row.id, settings);
+  if (!claimed) return { skipped: true, id: row.id, reason: "not claimed" };
+
+  let result;
+  try {
+    const order = await db.getOrder(claimed.orderId);
+    if (!order) {
+      await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+        terminal: true,
+        error: "order missing",
+      });
+      return { ok: false, id: claimed.id, reason: "order missing" };
+    }
+    const lineItems = await db.getOrderLineItems(order);
+    const subtotal = db.orderSubtotal(lineItems);
+    const hasPrices = lineItems.every((item) => item.unitPrice !== null);
+    result = await module.exports.sendOrderConfirmation({
+      order,
+      lineItems,
+      subtotal,
+      hasPrices,
+    });
+  } catch (err) {
+    result = { ok: false, error: err.message || String(err) };
+  }
+
+  if (result && result.ok) {
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      sent: true,
+      messageId: result.messageId || "",
+    });
+    return { ok: true, id: claimed.id, orderId: claimed.orderId };
+  }
+
+  if (result && result.skipped) {
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      terminal: true,
+      error: result.reason || "skipped",
+    });
+    return { skipped: true, id: claimed.id, reason: result.reason || "skipped" };
+  }
+
+  const error = (result && result.error) || "send failed";
+  const dead = claimed.attempts >= settings.maxAttempts;
+  await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+    dead,
+    retry: !dead,
+    error,
+    nextAttemptAt: String(Date.now() + retryDelayMs(claimed.attempts, settings)),
+  });
+  return { ok: false, id: claimed.id, retry: !dead, dead, error };
+}
+
 module.exports = {
   isMailConfigured,
   sendOrderConfirmation,
   buildReceiptHtml,
+  drainOutbox,
 };

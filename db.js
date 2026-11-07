@@ -9,6 +9,8 @@
  *   - sessions:         server-side session records (cookie holds only the id)
  *   - checkout_tokens:  single-use confirm-form keys
  *   - abuse_events:     per-IP and per-email windows for order create and order mail
+ *   - rate_limit_locks: rows locked so a limit check and its insert cannot race
+ *   - mail_outbox:      one confirmation per order, retried until sent or given up
  *
  * Connection settings come from .env (MYSQL_*). Create the database first with:
  *   mysql -u root -p < scripts/init-ocean.sql
@@ -200,6 +202,31 @@ async function initDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS rate_limit_locks (
+      lock_key VARCHAR(320) NOT NULL,
+      PRIMARY KEY (lock_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS mail_outbox (
+      id              INT          NOT NULL AUTO_INCREMENT,
+      order_id        INT          NOT NULL,
+      status          VARCHAR(16)  NOT NULL,
+      attempts        INT          NOT NULL DEFAULT 0,
+      next_attempt_at VARCHAR(32)  NOT NULL,
+      claimed_at      VARCHAR(32)  NULL,
+      claim_token     VARCHAR(64)  NULL,
+      last_error      VARCHAR(500) NULL,
+      message_id      VARCHAR(255) NULL,
+      sent_at         VARCHAR(64)  NULL,
+      created_at      VARCHAR(64)  NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY mail_outbox_order (order_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   // Seed default catalog once
   const [countRows] = await p.query(
     "SELECT COUNT(*) AS n FROM products"
@@ -348,32 +375,82 @@ async function updateProductImage(productId, imagePath) {
 /**
  * Update price and/or available quantity for a product.
  * Returns true if a row was updated.
+ *
+ * When qtyBaseline is sent (the qty the admin form loaded), the save applies
+ * the difference under a row lock. A checkout that reserved a unit between
+ * the page load and the save is not overwritten.
+ * Without a baseline, qtyAvailable is an absolute set (catalog tools and tests).
  */
-async function updateProductPricing(productId, { price, qtyAvailable }) {
-  const product = await getProduct(productId);
-  if (!product) return false;
+async function updateProductPricing(productId, { price, qtyAvailable, qtyBaseline }) {
+  const conn = await getPool().getConnection();
+  let finished = false;
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.execute(
+      "SELECT price, qty_available FROM products WHERE id = ? FOR UPDATE",
+      [productId]
+    );
+    if (!rows[0]) {
+      await conn.rollback();
+      finished = true;
+      return false;
+    }
 
-  const nextPrice =
-    price !== undefined && price !== null && price !== ""
-      ? Number(price)
-      : product.price;
-  const nextQty =
-    qtyAvailable !== undefined && qtyAvailable !== null && qtyAvailable !== ""
-      ? Math.max(0, Math.floor(Number(qtyAvailable)))
-      : product.qtyAvailable;
+    const currentPrice = Number(rows[0].price);
+    const currentQty = Number(rows[0].qty_available);
+    const nextPrice =
+      price !== undefined && price !== null && price !== ""
+        ? Number(price)
+        : currentPrice;
+    const hasQty =
+      qtyAvailable !== undefined && qtyAvailable !== null && qtyAvailable !== "";
+    const hasBaseline =
+      qtyBaseline !== undefined && qtyBaseline !== null && qtyBaseline !== "";
 
-  if (!Number.isFinite(nextPrice) || nextPrice < 0) {
-    throw new Error("Enter a valid price.");
+    let nextQty = Number.isFinite(currentQty) ? currentQty : 0;
+    if (hasBaseline && hasQty) {
+      const baseline = Math.floor(Number(qtyBaseline));
+      const desired = Math.floor(Number(qtyAvailable));
+      if (!Number.isFinite(baseline) || !Number.isFinite(desired) || desired < 0) {
+        throw new Error("Enter a valid quantity.");
+      }
+      nextQty = nextQty + (desired - baseline);
+      if (!Number.isFinite(nextQty) || nextQty < 0) {
+        throw orderError(
+          "Quantity changed while you were editing. Reload the page and save again.",
+          "CONFLICT"
+        );
+      }
+    } else if (hasQty) {
+      nextQty = Math.max(0, Math.floor(Number(qtyAvailable)));
+    }
+
+    if (!Number.isFinite(nextPrice) || nextPrice < 0) {
+      throw new Error("Enter a valid price.");
+    }
+    if (!Number.isFinite(nextQty) || nextQty < 0) {
+      throw new Error("Enter a valid quantity.");
+    }
+
+    const [result] = await conn.execute(
+      "UPDATE products SET price = ?, qty_available = ? WHERE id = ?",
+      [nextPrice, nextQty, productId]
+    );
+    await conn.commit();
+    finished = true;
+    return result.affectedRows > 0;
+  } catch (err) {
+    if (!finished) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error("Pricing rollback failed:", rollbackErr);
+      }
+    }
+    throw err;
+  } finally {
+    conn.release();
   }
-  if (!Number.isFinite(nextQty) || nextQty < 0) {
-    throw new Error("Enter a valid quantity.");
-  }
-
-  const [result] = await getPool().execute(
-    "UPDATE products SET price = ?, qty_available = ? WHERE id = ?",
-    [nextPrice, nextQty, productId]
-  );
-  return result.affectedRows > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,12 +547,153 @@ async function issueCheckoutToken({ sessionId, intent }) {
   const lines = mergeIntentLines(intent && intent.lines);
   const mode = intent && intent.mode === "cart" ? "cart" : "buy_now";
   const token = crypto.randomBytes(32).toString("hex");
+  try {
+    await cleanupRetention();
+    await trimUnusedCheckoutTokens(sid);
+  } catch (err) {
+    console.error("Checkout token cleanup failed:", err);
+  }
   await getPool().execute(
     `INSERT INTO checkout_tokens (token, session_id, intent, created_at)
      VALUES (?, ?, ?, ?)`,
     [token, sid, JSON.stringify({ mode, lines }), new Date().toISOString()]
   );
   return token;
+}
+
+async function trimUnusedCheckoutTokens(sessionId) {
+  const cap = getAbuseLimits().unusedTokenCap;
+  const [rows] = await getPool().execute(
+    `SELECT token FROM checkout_tokens
+      WHERE session_id = ? AND order_id IS NULL
+      ORDER BY created_at ASC, token ASC`,
+    [sessionId]
+  );
+  const excess = rows.length - (cap - 1);
+  if (excess <= 0) return 0;
+  let removed = 0;
+  for (const row of rows.slice(0, excess)) {
+    const [result] = await getPool().execute(
+      "DELETE FROM checkout_tokens WHERE token = ? AND order_id IS NULL",
+      [row.token]
+    );
+    removed += result.affectedRows || 0;
+  }
+  return removed;
+}
+
+/**
+ * Drop expired unused checkout forms, old consumed tokens, and abuse rows
+ * past the retention window. Bounded so one call cannot scan forever.
+ * Does not update orders.
+ */
+async function cleanupRetention(options = {}) {
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const limits = getAbuseLimits();
+  const batch = 500;
+  let removed = 0;
+
+  const [oldAbuse] = await getPool().execute(
+    `SELECT id FROM abuse_events
+      WHERE created_at < ?
+      ORDER BY id ASC
+      LIMIT ${batch}`,
+    [String(now - limits.retentionMs)]
+  );
+  for (const row of oldAbuse) {
+    const [result] = await getPool().execute(
+      "DELETE FROM abuse_events WHERE id = ?",
+      [row.id]
+    );
+    removed += result.affectedRows || 0;
+  }
+
+  const unusedCutoff = new Date(now - limits.checkoutTtlMs).toISOString();
+  const [staleTokens] = await getPool().execute(
+    `SELECT token FROM checkout_tokens
+      WHERE order_id IS NULL AND created_at < ?
+      LIMIT ${batch}`,
+    [unusedCutoff]
+  );
+  for (const row of staleTokens) {
+    const [result] = await getPool().execute(
+      "DELETE FROM checkout_tokens WHERE token = ? AND order_id IS NULL",
+      [row.token]
+    );
+    removed += result.affectedRows || 0;
+  }
+
+  const consumedCutoff = new Date(now - limits.retentionMs).toISOString();
+  const [oldConsumed] = await getPool().execute(
+    `SELECT token FROM checkout_tokens
+      WHERE order_id IS NOT NULL
+        AND consumed_at IS NOT NULL
+        AND consumed_at < ?
+      LIMIT ${batch}`,
+    [consumedCutoff]
+  );
+  for (const row of oldConsumed) {
+    const [result] = await getPool().execute(
+      "DELETE FROM checkout_tokens WHERE token = ? AND order_id IS NOT NULL",
+      [row.token]
+    );
+    removed += result.affectedRows || 0;
+  }
+  return removed;
+}
+
+async function countUnusedCheckoutTokens(sessionId) {
+  const [rows] = await getPool().execute(
+    `SELECT COUNT(*) AS n FROM checkout_tokens
+      WHERE session_id = ? AND order_id IS NULL`,
+    [String(sessionId || "")]
+  );
+  return Number(rows[0] ? rows[0].n : 0);
+}
+
+async function setCheckoutTokenCreatedAt(token, createdAt) {
+  await getPool().execute(
+    "UPDATE checkout_tokens SET created_at = ? WHERE token = ?",
+    [createdAt, token]
+  );
+}
+
+async function insertAbuseEvent({ action, ipAddress, email, createdAt }) {
+  await getPool().execute(
+    `INSERT INTO abuse_events (action, ip_address, email, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [
+      action,
+      ipAddress,
+      email || null,
+      createdAt !== undefined && createdAt !== null
+        ? String(createdAt)
+        : String(Date.now()),
+    ]
+  );
+}
+
+async function countAbuseEvents({ action, ipAddress, email } = {}) {
+  const clauses = [];
+  const params = [];
+  if (action) {
+    clauses.push("action = ?");
+    params.push(action);
+  }
+  if (ipAddress) {
+    clauses.push("ip_address = ?");
+    params.push(ipAddress);
+  }
+  if (email) {
+    clauses.push("email = ?");
+    params.push(email);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const [rows] = await getPool().execute(
+    `SELECT COUNT(*) AS n FROM abuse_events ${where}`,
+    params
+  );
+  return Number(rows[0] ? rows[0].n : 0);
 }
 
 async function describeCheckout(token, sessionId) {
@@ -536,6 +754,83 @@ async function assertUnderLimit(conn, action, ipAddress, email, limits) {
     const n = await countAbuse(conn, action, "email", email, since);
     if (n >= emailLimit) return false;
   }
+  return true;
+}
+
+function isDuplicateKey(err) {
+  const code = err && err.code;
+  const message = String((err && err.message) || "");
+  return (
+    code === "ER_DUP_ENTRY" ||
+    code === "SQLITE_CONSTRAINT" ||
+    /UNIQUE constraint failed/i.test(message) ||
+    /Duplicate entry/i.test(message)
+  );
+}
+
+/**
+ * Lock one rate-limit bucket for the rest of this transaction.
+ * Check and insert both run while this lock is held, so two checkouts
+ * cannot both observe "under the cap" and then both insert.
+ */
+async function lockBucket(conn, key) {
+  const [existing] = await conn.execute(
+    "SELECT lock_key FROM rate_limit_locks WHERE lock_key = ? FOR UPDATE",
+    [key]
+  );
+  if (existing.length) return;
+  try {
+    await conn.execute(
+      "INSERT INTO rate_limit_locks (lock_key) VALUES (?)",
+      [key]
+    );
+  } catch (err) {
+    if (!isDuplicateKey(err)) throw err;
+  }
+  await conn.execute(
+    "SELECT lock_key FROM rate_limit_locks WHERE lock_key = ? FOR UPDATE",
+    [key]
+  );
+}
+
+function rateLockKeys(ip, email) {
+  const keys = [
+    `order_create:ip:${ip}`,
+    `order_mail:ip:${ip}`,
+    `order_fail:ip:${ip}`,
+  ];
+  if (email) {
+    keys.push(
+      `order_create:email:${email}`,
+      `order_mail:email:${email}`,
+      `order_fail:email:${email}`
+    );
+  }
+  keys.sort();
+  return keys;
+}
+
+async function lockRateBuckets(conn, ip, email) {
+  for (const key of rateLockKeys(ip, email)) {
+    await lockBucket(conn, key);
+  }
+}
+
+/**
+ * Store a failed checkout attempt, but stop once the cap for this window
+ * is reached so retries cannot grow the table without bound.
+ */
+async function recordFailureBounded(conn, ip, email) {
+  const limits = getAbuseLimits();
+  if (!limits.failLimit) return false;
+  const since = Date.now() - limits.orderWindowMs;
+  const ipCount = await countAbuse(conn, "order_fail", "ip_address", ip, since);
+  if (ipCount >= limits.failLimit) return false;
+  if (email) {
+    const emailCount = await countAbuse(conn, "order_fail", "email", email, since);
+    if (emailCount >= limits.failLimit) return false;
+  }
+  await recordAbuse(conn, "order_fail", ip, email);
   return true;
 }
 
@@ -686,6 +981,10 @@ async function placeCheckoutOrder({
       );
     }
 
+    // Hold the IP and email buckets before the count and until commit.
+    // The success row is inserted later in this same transaction, still
+    // under those locks, so a burst cannot pass the cap.
+    await lockRateBuckets(conn, ip, limitEmail);
     const allowed = await assertUnderLimit(
       conn,
       "order_create",
@@ -694,7 +993,7 @@ async function placeCheckoutOrder({
       limits
     );
     if (!allowed) {
-      await recordAbuse(conn, "order_create", ip, limitEmail);
+      await recordFailureBounded(conn, ip, limitEmail);
       await conn.commit();
       finished = true;
       throw orderError(
@@ -711,7 +1010,7 @@ async function placeCheckoutOrder({
       }
     } catch (err) {
       if (err && err.code === "OUT_OF_STOCK") {
-        // Drop the partial hold, then keep the attempt on the rate-limit log.
+        // Drop the partial hold. The failure row is capped and is not an order.
         try {
           await conn.rollback();
         } catch (rollbackErr) {
@@ -719,7 +1018,8 @@ async function placeCheckoutOrder({
         }
         try {
           await conn.beginTransaction();
-          await recordAbuse(conn, "order_create", ip, limitEmail);
+          await lockRateBuckets(conn, ip, limitEmail);
+          await recordFailureBounded(conn, ip, limitEmail);
           await conn.commit();
         } catch (recordErr) {
           console.error("Abuse event record failed:", recordErr);
@@ -791,17 +1091,28 @@ async function placeCheckoutOrder({
       "UPDATE ip_order_counts SET order_count = order_count + 1 WHERE ip_address = ?",
       [ip]
     );
+    // Consume the order slot now, while the bucket locks from the check
+    // are still held. A concurrent checkout blocks until this commits.
     await recordAbuse(conn, "order_create", ip, limitEmail);
 
-    const mailPermitted = await assertUnderLimit(
+    let mailQueued = false;
+    const mailAllowed = await assertUnderLimit(
       conn,
       "order_mail",
       ip,
       limitEmail,
       limits
     );
-    if (mailPermitted) {
+    if (mailAllowed) {
       await recordAbuse(conn, "order_mail", ip, limitEmail);
+      const queuedAt = String(Date.now());
+      await conn.execute(
+        `INSERT INTO mail_outbox
+           (order_id, status, attempts, next_attempt_at, created_at)
+         VALUES (?, 'pending', 0, ?, ?)`,
+        [insertResult.insertId, queuedAt, new Date().toISOString()]
+      );
+      mailQueued = true;
     }
 
     await conn.commit();
@@ -811,7 +1122,8 @@ async function placeCheckoutOrder({
       orderId,
       mode: intent.mode,
       lines: intent.lines,
-      mailPermitted,
+      mailPermitted: mailQueued,
+      mailQueued,
     };
   } catch (err) {
     await finishRollback();
@@ -855,6 +1167,190 @@ async function insertUnreservedOrder({
 
 async function clearAbuseEvents() {
   await getPool().query("DELETE FROM abuse_events");
+}
+
+function mailRetrySettings() {
+  const maxAttempts = readPositive("MAIL_MAX_ATTEMPTS", 5);
+  const baseMs = readNonNegative("MAIL_RETRY_BASE_MS", 30000);
+  const maxDelayMs = readPositive("MAIL_RETRY_MAX_MS", 15 * 60 * 1000);
+  const leaseMs = readPositive("MAIL_SEND_LEASE_MS", 120000);
+  return {
+    maxAttempts: maxAttempts > 0 ? maxAttempts : 5,
+    baseMs,
+    maxDelayMs: maxDelayMs > 0 ? maxDelayMs : 15 * 60 * 1000,
+    leaseMs: leaseMs > 0 ? leaseMs : 120000,
+  };
+}
+
+function readPositive(name, fallback) {
+  const n = readNonNegative(name, fallback);
+  return n > 0 ? n : fallback;
+}
+
+function readNonNegative(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+}
+
+function mapOutbox(row) {
+  if (!row) return undefined;
+  return {
+    id: Number(row.id),
+    orderId: Number(row.order_id),
+    status: row.status,
+    attempts: Number(row.attempts) || 0,
+    nextAttemptAt: row.next_attempt_at,
+    claimedAt: row.claimed_at || null,
+    claimToken: row.claim_token || null,
+    lastError: row.last_error || null,
+    messageId: row.message_id || null,
+    sentAt: row.sent_at || null,
+    createdAt: row.created_at,
+  };
+}
+
+async function listDueMail(limit, settings) {
+  const now = String(Date.now());
+  const leaseBefore = String(Date.now() - settings.leaseMs);
+  const cap = Math.max(1, Math.min(50, Number(limit) || 5));
+  const [rows] = await getPool().execute(
+    `SELECT * FROM mail_outbox
+      WHERE attempts < ?
+        AND (
+          (status = 'pending' AND next_attempt_at <= ?)
+          OR (status = 'sending' AND (claimed_at IS NULL OR claimed_at <= ?))
+        )
+      ORDER BY id ASC
+      LIMIT ${cap}`,
+    [settings.maxAttempts, now, leaseBefore]
+  );
+  return rows.map(mapOutbox);
+}
+
+/**
+ * Move one due row to sending. Returns null when another worker took it.
+ * The claim commits before SMTP so a slow send does not hold the rate locks.
+ */
+async function claimMailOutbox(id, settings) {
+  const now = String(Date.now());
+  const leaseBefore = String(Date.now() - settings.leaseMs);
+  const claimToken = crypto.randomBytes(16).toString("hex");
+  const conn = await getPool().getConnection();
+  let finished = false;
+  try {
+    await conn.beginTransaction();
+    const [result] = await conn.execute(
+      `UPDATE mail_outbox
+          SET status = 'sending',
+              attempts = attempts + 1,
+              claimed_at = ?,
+              claim_token = ?
+        WHERE id = ?
+          AND attempts < ?
+          AND (
+            (status = 'pending' AND next_attempt_at <= ?)
+            OR (status = 'sending' AND (claimed_at IS NULL OR claimed_at <= ?))
+          )`,
+      [now, claimToken, id, settings.maxAttempts, now, leaseBefore]
+    );
+    if (!result.affectedRows) {
+      await conn.rollback();
+      finished = true;
+      return null;
+    }
+    const [rows] = await conn.execute(
+      "SELECT * FROM mail_outbox WHERE id = ? AND claim_token = ?",
+      [id, claimToken]
+    );
+    await conn.commit();
+    finished = true;
+    return mapOutbox(rows[0]);
+  } catch (err) {
+    if (!finished) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error("Mail claim rollback failed:", rollbackErr);
+      }
+    }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function finishMailOutbox(id, claimToken, outcome) {
+  const conn = await getPool().getConnection();
+  try {
+    await conn.beginTransaction();
+    if (outcome.sent) {
+      await conn.execute(
+        `UPDATE mail_outbox
+            SET status = 'sent',
+                sent_at = ?,
+                message_id = ?,
+                last_error = NULL
+          WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+        [
+          new Date().toISOString(),
+          outcome.messageId ? String(outcome.messageId).slice(0, 255) : null,
+          id,
+          claimToken,
+        ]
+      );
+    } else if (outcome.dead || outcome.terminal) {
+      await conn.execute(
+        `UPDATE mail_outbox
+            SET status = 'dead',
+                last_error = ?,
+                next_attempt_at = ?
+          WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+        [
+          String(outcome.error || "not sent").slice(0, 500),
+          String(Date.now()),
+          id,
+          claimToken,
+        ]
+      );
+    } else {
+      await conn.execute(
+        `UPDATE mail_outbox
+            SET status = 'pending',
+                last_error = ?,
+                next_attempt_at = ?
+          WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+        [
+          String(outcome.error || "send failed").slice(0, 500),
+          String(outcome.nextAttemptAt || Date.now()),
+          id,
+          claimToken,
+        ]
+      );
+    }
+    await conn.commit();
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch (rollbackErr) {
+      console.error("Mail finish rollback failed:", rollbackErr);
+    }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+async function getMailOutboxByOrderId(orderId) {
+  const n = parseInt(String(orderId), 10);
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  const [rows] = await getPool().execute(
+    "SELECT * FROM mail_outbox WHERE order_id = ? LIMIT 1",
+    [n]
+  );
+  return mapOutbox(rows[0]);
 }
 
 function normalizeOrderStatus(row) {
@@ -1427,6 +1923,16 @@ module.exports = {
   placeCheckoutOrder,
   insertUnreservedOrder,
   clearAbuseEvents,
+  cleanupRetention,
+  countUnusedCheckoutTokens,
+  setCheckoutTokenCreatedAt,
+  insertAbuseEvent,
+  countAbuseEvents,
+  mailRetrySettings,
+  listDueMail,
+  claimMailOutbox,
+  finishMailOutbox,
+  getMailOutboxByOrderId,
   listOrders,
   listShipQueue,
   shipOrder,

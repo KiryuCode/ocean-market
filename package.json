@@ -9,7 +9,7 @@
     "db:init": "node scripts/init-db.js",
     "admin:hash": "node scripts/hash-admin-password.js",
     "pack": "bash scripts/pack-deploy.sh",
-    "test": "node --test test/*.test.js"
+    "test": "node --test --experimental-test-isolation=process test/*.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -276,6 +276,7 @@
                       class="admin-pricing-form"
                     >
                       <%- include('partials/csrf') %>
+                      <input type="hidden" name="qty_baseline" value="<%= product.qtyAvailable %>">
                       <label class="admin-field-label">
                         Price
                         <input
