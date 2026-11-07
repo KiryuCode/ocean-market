@@ -43,6 +43,7 @@ rsync -avz \
   csrf.js \
   db.js \
   mail.js \
+  session-store.js \
   package.json \
   package-lock.json \
   Dockerfile \
