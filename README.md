@@ -12,7 +12,9 @@ Local development is Node 18+ and `npm run dev`. Production is a **Docker Compos
 - Session-based shopping cart
 - Buy now and full-cart checkout
 - MySQL order storage with padded IDs (e.g. `0001`)
-- Per-IP order rate limiting
+- Per-IP lifetime order cap, plus per-IP and per-email throttles on order creation and order mail
+- Server-side sessions and a single-use checkout key so a repeated confirm does not create a second order or a second email
+- Stock is held at checkout. Shipping does not take those units again
 - Admin panel for products, photo uploads, orders, and IP counters
 - Order confirmation email when SMTP is configured
 - SEO metadata, `/robots.txt`, and `/sitemap.xml` (edit in `config.js`)

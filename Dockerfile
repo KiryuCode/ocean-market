@@ -19,7 +19,7 @@ ENV NODE_ENV=production \
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 
-COPY app.js cart.js config.js csrf.js db.js mail.js ./
+COPY app.js cart.js config.js csrf.js db.js mail.js session-store.js ./
 COPY views ./views
 COPY public ./public
 COPY scripts ./scripts
