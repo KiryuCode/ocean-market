@@ -643,18 +643,15 @@ app.post("/confirm", async (req, res, next) => {
       cart.clearCart(req);
     }
 
-    const order = await db.getOrder(placed.orderId);
-    if (!placed.replay && placed.mailPermitted && order) {
-      const lineItems = await db.getOrderLineItems(order);
-      const subtotal = db.orderSubtotal(lineItems);
-      const hasPrices = lineItems.every((item) => item.unitPrice !== null);
-      mail
-        .sendOrderConfirmation({ order, lineItems, subtotal, hasPrices })
-        .catch((err) => {
-          console.error("[mail] Unexpected error sending confirmation:", err);
-        });
+    // The outbox row is the right to send. A failed SMTP attempt stays
+    // pending and is retried; the checkout response does not depend on it.
+    try {
+      await mail.drainOutbox({ limit: 5 });
+    } catch (err) {
+      console.error("[mail] Outbox drain failed:", err);
     }
 
+    const order = await db.getOrder(placed.orderId);
     const items = await itemsFromLines(placed.lines);
     return res.render("success", {
       orderId: placed.orderId,
@@ -1068,6 +1065,7 @@ app.post("/admin/products/:productId/update", async (req, res, next) => {
       await db.updateProductPricing(productId, {
         price: req.body.price,
         qtyAvailable: req.body.qty_available,
+        qtyBaseline: req.body.qty_baseline,
       });
     } catch (_e) {
       // Stay on products tab; no toast
@@ -1185,6 +1183,7 @@ async function start() {
   try {
     await initDbWithRetry();
     appReady = true;
+    startMailMaintenance();
     const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
     console.log(`${STORE_NAME} ready at http://${displayHost}:${PORT}`);
     console.log(`Admin: http://${displayHost}:${PORT}/admin`);
@@ -1197,6 +1196,19 @@ async function start() {
     console.error(err.message || err);
     process.exit(1);
   }
+}
+
+function startMailMaintenance() {
+  const pollMs = Number(process.env.MAIL_RETRY_POLL_MS || 30000);
+  const timer = setInterval(() => {
+    db.cleanupRetention().catch((err) => {
+      console.error("[mail] Retention cleanup failed:", err);
+    });
+    mail.drainOutbox({ limit: 5 }).catch((err) => {
+      console.error("[mail] Retry drain failed:", err);
+    });
+  }, Number.isFinite(pollMs) && pollMs > 0 ? pollMs : 30000);
+  if (typeof timer.unref === "function") timer.unref();
 }
 
 async function ready() {

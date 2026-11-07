@@ -51,6 +51,13 @@ function getAbuseLimits() {
     mailEmail: readLimit("MAIL_RATE_LIMIT_EMAIL", 3),
     mailWindowMs: readWindowMs("MAIL_RATE_WINDOW_SEC", 3600),
     checkoutTtlMs: (ttlSec > 0 ? ttlSec : 7200) * 1000,
+    // Failed attempts are stored separately from successful orders and capped.
+    failLimit: readLimit("ORDER_FAIL_LIMIT", 8),
+    retentionMs: readWindowMs("ABUSE_RETENTION_SEC", 86400),
+    unusedTokenCap: (() => {
+      const cap = readLimit("CHECKOUT_UNUSED_TOKEN_CAP", 3);
+      return cap > 0 ? cap : 3;
+    })(),
   };
 }
 

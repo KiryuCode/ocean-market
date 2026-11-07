@@ -16,7 +16,7 @@ Local development is Node 18+ and `npm run dev`. Production is a **Docker Compos
 - Server-side sessions and a single-use checkout key so a repeated confirm does not create a second order or a second email
 - Stock is held at checkout. Shipping does not take those units again
 - Admin panel for products, photo uploads, orders, and IP counters
-- Order confirmation email when SMTP is configured
+- Order confirmation email when SMTP is configured, retried from a per-order outbox if sending fails
 - SEO metadata, `/robots.txt`, and `/sitemap.xml` (edit in `config.js`)
 
 ## Requirements
