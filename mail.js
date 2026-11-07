@@ -6,6 +6,7 @@
  */
 
 const nodemailer = require("nodemailer");
+const db = require("./db");
 const { STORE_NAME, STORE_TAGLINE, formatPrice } = require("./config");
 
 function env(name, fallback = "") {
@@ -158,12 +159,11 @@ function buildReceiptHtml({ order, lineItems, subtotal, hasPrices }) {
 </html>`;
 }
 
-function createTransport() {
+function createTransport(timeoutMs) {
   const port = Number(env("SMTP_PORT", "587")) || 587;
   const secure =
     env("SMTP_SECURE", "").toLowerCase() === "true" || port === 465;
-
-  return nodemailer.createTransport({
+  const transportOptions = {
     host: env("SMTP_HOST"),
     port,
     secure,
@@ -171,7 +171,13 @@ function createTransport() {
       user: env("SMTP_USER"),
       pass: env("SMTP_PASS"),
     },
-  });
+  };
+  if (timeoutMs > 0) {
+    transportOptions.connectionTimeout = timeoutMs;
+    transportOptions.greetingTimeout = timeoutMs;
+    transportOptions.socketTimeout = timeoutMs;
+  }
+  return nodemailer.createTransport(transportOptions);
 }
 
 /**
@@ -180,7 +186,14 @@ function createTransport() {
  * BCC = EMAIL_TO when the customer is TO (so store still gets a copy).
  * Never throws — logs errors so checkout is not blocked.
  */
-async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) {
+async function sendOrderConfirmation({
+  order,
+  lineItems,
+  subtotal,
+  hasPrices,
+  timeoutMs,
+  signal,
+}) {
   const storeInbox = env("EMAIL_TO");
   const customerEmail = String(order.email || "").trim();
   if (!storeInbox && !customerEmail) {
@@ -210,8 +223,19 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
       ? storeInbox
       : undefined;
 
+  const budget =
+    Number(timeoutMs) > 0 ? Number(timeoutMs) : undefined;
+  let transport;
+  let timer;
+  const onAbort = () => {
+    if (transport) transport.close();
+  };
   try {
-    const transport = createTransport();
+    transport = createTransport(budget);
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
     const mailOpts = {
       from,
       to,
@@ -231,7 +255,18 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
     };
     if (bcc) mailOpts.bcc = bcc;
 
-    const info = await transport.sendMail(mailOpts);
+    const sendPromise = transport.sendMail(mailOpts);
+    const info = await new Promise((resolve, reject) => {
+      if (budget) {
+        timer = setTimeout(() => {
+          onAbort();
+          const err = new Error("SMTP timed out");
+          err.code = "SMTP_TIMEOUT";
+          reject(err);
+        }, budget);
+      }
+      sendPromise.then(resolve, reject);
+    });
     console.log(
       `[mail] Order #${orderId} confirmation sent to ${to}` +
         (bcc ? ` (bcc ${bcc})` : ""),
@@ -241,11 +276,155 @@ async function sendOrderConfirmation({ order, lineItems, subtotal, hasPrices }) 
   } catch (err) {
     console.error(`[mail] Failed to send order #${orderId} email:`, err.message || err);
     return { ok: false, error: err.message || String(err) };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", onAbort);
+    if (transport) transport.close();
   }
+}
+
+function retryDelayMs(attempts, settings) {
+  const shift = Math.max(0, Number(attempts) - 1);
+  const delay = settings.baseMs * Math.pow(2, Math.min(shift, 10));
+  return Math.min(settings.maxDelayMs, delay);
+}
+
+/**
+ * Send due outbox rows. Each order has one row. A claim commits before SMTP,
+ * and a second drain sees the row as sending or sent, so the message goes
+ * out once. Failures stay pending until the attempt cap, then dead.
+ */
+async function drainOutbox(options = {}) {
+  const settings = db.mailRetrySettings();
+  const limit = Math.max(1, Math.min(20, Number(options.limit) || 5));
+  const due = await db.listDueMail(limit, settings);
+  const results = [];
+  for (const row of due) {
+    results.push(await deliverOutboxRow(row, settings));
+  }
+  return results;
+}
+
+function configSkip(result) {
+  const reason = String((result && result.reason) || "");
+  return /smtp not configured/i.test(reason);
+}
+
+async function deliverOutboxRow(row, settings) {
+  const claimed = await db.claimMailOutbox(row.id, settings);
+  if (!claimed) return { skipped: true, id: row.id, reason: "not claimed" };
+
+  const controller = new AbortController();
+  let lostFence = false;
+  const renewEvery = Math.max(15, Math.floor(settings.leaseMs / 3));
+  const renewTimer = setInterval(() => {
+    db.renewMailClaim(claimed.id, claimed.claimToken)
+      .then((owned) => {
+        if (!owned) {
+          lostFence = true;
+          controller.abort();
+        }
+      })
+      .catch(() => {
+        lostFence = true;
+        controller.abort();
+      });
+  }, renewEvery);
+  if (typeof renewTimer.unref === "function") renewTimer.unref();
+
+  let result;
+  let timedOut = false;
+  try {
+    const order = await db.getOrder(claimed.orderId);
+    if (!order) {
+      result = { ok: false, error: "order missing", terminal: true };
+    } else {
+      const lineItems = await db.getOrderLineItems(order);
+      const subtotal = db.orderSubtotal(lineItems);
+      const hasPrices = lineItems.every((item) => item.unitPrice !== null);
+      const sendPromise = module.exports.sendOrderConfirmation({
+        order,
+        lineItems,
+        subtotal,
+        hasPrices,
+        timeoutMs: settings.smtpTimeoutMs,
+        signal: controller.signal,
+      });
+      let timer;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          resolve({ ok: false, error: "SMTP timed out" });
+        }, settings.smtpTimeoutMs);
+      });
+      result = await Promise.race([sendPromise, timeout]);
+      clearTimeout(timer);
+      if (timedOut) {
+        // The claim stays ours until the send settles, so a second worker
+        // cannot start another SMTP session for this order.
+        await Promise.race([
+          sendPromise.then(
+            () => {},
+            () => {}
+          ),
+          new Promise((resolve) => setTimeout(resolve, settings.smtpTimeoutMs)),
+        ]);
+        result = { ok: false, error: "SMTP timed out" };
+      }
+    }
+  } catch (err) {
+    result = { ok: false, error: err.message || String(err) };
+  } finally {
+    clearInterval(renewTimer);
+  }
+
+  const stillOurs = await db.renewMailClaim(claimed.id, claimed.claimToken);
+  if (!stillOurs || lostFence) {
+    return { ok: false, id: claimed.id, lostFence: true };
+  }
+
+  if (result && result.ok) {
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      sent: true,
+      messageId: result.messageId || "",
+    });
+    return { ok: true, id: claimed.id, orderId: claimed.orderId };
+  }
+
+  if (result && result.terminal) {
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      terminal: true,
+      error: result.error || "order missing",
+    });
+    return { ok: false, id: claimed.id, reason: result.error || "order missing" };
+  }
+
+  if (result && result.skipped && !configSkip(result)) {
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      terminal: true,
+      error: result.reason || "skipped",
+    });
+    return { skipped: true, id: claimed.id, reason: result.reason || "skipped" };
+  }
+
+  const error =
+    (result && (result.error || result.reason)) || "send failed";
+  const requeue = Boolean(result && result.skipped && configSkip(result));
+  const dead = !requeue && claimed.attempts >= settings.maxAttempts;
+  await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+    dead,
+    requeue,
+    retry: !dead,
+    error,
+    nextAttemptAt: String(Date.now() + retryDelayMs(claimed.attempts, settings)),
+  });
+  return { ok: false, id: claimed.id, retry: !dead, dead, requeue, error };
 }
 
 module.exports = {
   isMailConfigured,
   sendOrderConfirmation,
   buildReceiptHtml,
+  drainOutbox,
 };
