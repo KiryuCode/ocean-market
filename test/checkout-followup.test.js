@@ -124,6 +124,8 @@ describe("checkout follow-up", { concurrency: false }, () => {
     process.env.ORDER_FAIL_LIMIT = "8";
     delete process.env.MAIL_RETRY_BASE_MS;
     delete process.env.MAIL_MAX_ATTEMPTS;
+    delete process.env.MAIL_SEND_LEASE_MS;
+    delete process.env.MAIL_SMTP_TIMEOUT_MS;
     await db.clearAbuseEvents();
     await db.resetIpCount();
   });
@@ -385,5 +387,94 @@ describe("checkout follow-up", { concurrency: false }, () => {
     // whichever write lands first.
     assert.equal(await stock("basil"), 2);
     assert.equal(sent.length, 1);
+  });
+
+  test("a send still inside its lease cannot be stolen", async () => {
+    process.env.MAIL_SEND_LEASE_MS = "240";
+    process.env.MAIL_RETRY_BASE_MS = "0";
+    await db.updateProductPricing("rosemary", { qtyAvailable: 4 });
+    const settings = db.mailRetrySettings();
+    assert.ok(settings.smtpTimeoutMs < settings.leaseMs);
+
+    let calls = 0;
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
+    mail.sendOrderConfirmation = async ({ signal }) => {
+      calls += 1;
+      markStarted();
+      await new Promise((resolve, reject) => {
+        const abort = () => reject(new Error("aborted"));
+        if (signal && signal.aborted) {
+          abort();
+          return;
+        }
+        if (signal) signal.addEventListener("abort", abort, { once: true });
+      });
+      return { ok: true, messageId: "late" };
+    };
+
+    const agent = request.agent(app);
+    const form = await openBuy(agent, "rosemary");
+    const checkout = postConfirm(agent, {
+      _csrf: form.csrf,
+      checkout_token: form.checkoutToken,
+      mode: "buy_now",
+      product_id: "rosemary",
+      email: "lease@example.com",
+    });
+    await started;
+    assert.equal(calls, 1);
+    await mail.drainOutbox();
+    assert.equal(calls, 1);
+    const res = await checkout;
+    assert.equal(res.status, 200);
+    assert.equal(calls, 1);
+    const orderId = orderIdOf(res.text);
+    let box = await db.getMailOutboxByOrderId(orderId);
+    assert.equal(box.status, "pending");
+
+    mail.sendOrderConfirmation = async () => {
+      calls += 1;
+      return { ok: true, messageId: "only-delivery" };
+    };
+    await mail.drainOutbox();
+    assert.equal(calls, 2);
+    box = await db.getMailOutboxByOrderId(orderId);
+    assert.equal(box.status, "sent");
+    assert.equal(box.messageId, "only-delivery");
+    await mail.drainOutbox();
+    assert.equal(calls, 2);
+  });
+
+  test("missing SMTP config stays retryable and sends once it is available", async () => {
+    process.env.MAIL_RETRY_BASE_MS = "0";
+    await db.updateProductPricing("thyme", { qtyAvailable: 4 });
+    let calls = 0;
+    mail.sendOrderConfirmation = async () => {
+      calls += 1;
+      if (calls === 1) return { skipped: true, reason: "SMTP not configured" };
+      return { ok: true, messageId: "configured-later" };
+    };
+    const agent = request.agent(app);
+    const form = await openBuy(agent, "thyme");
+    const res = await postConfirm(agent, {
+      _csrf: form.csrf,
+      checkout_token: form.checkoutToken,
+      mode: "buy_now",
+      product_id: "thyme",
+      email: "later@example.com",
+    });
+    assert.equal(res.status, 200);
+    const orderId = orderIdOf(res.text);
+    let box = await db.getMailOutboxByOrderId(orderId);
+    assert.equal(box.status, "pending");
+    assert.notEqual(box.status, "dead");
+    await mail.drainOutbox();
+    assert.equal(calls, 2);
+    box = await db.getMailOutboxByOrderId(orderId);
+    assert.equal(box.status, "sent");
+    assert.equal(box.messageId, "configured-later");
   });
 });

@@ -768,24 +768,40 @@ function isDuplicateKey(err) {
   );
 }
 
+function isLockConflict(err) {
+  const code = err && (err.code !== undefined ? err.code : err.errno);
+  const errno = err && err.errno;
+  return (
+    code === "ER_LOCK_DEADLOCK" ||
+    code === "ER_LOCK_WAIT_TIMEOUT" ||
+    code === 1213 ||
+    code === 1205 ||
+    errno === 1213 ||
+    errno === 1205
+  );
+}
+
 /**
  * Lock one rate-limit bucket for the rest of this transaction.
- * Check and insert both run while this lock is held, so two checkouts
- * cannot both observe "under the cap" and then both insert.
+ *
+ * SELECT FOR UPDATE on a missing key takes a gap lock. Two transactions
+ * can both hold that gap lock, then deadlock when they INSERT. Upsert the
+ * row first (exclusive lock on a real record), then lock it. Callers must
+ * pass keys in one sorted order.
  */
 async function lockBucket(conn, key) {
-  const [existing] = await conn.execute(
-    "SELECT lock_key FROM rate_limit_locks WHERE lock_key = ? FOR UPDATE",
-    [key]
-  );
-  if (existing.length) return;
-  try {
+  if (getPool().__sqlite) {
     await conn.execute(
-      "INSERT INTO rate_limit_locks (lock_key) VALUES (?)",
+      `INSERT INTO rate_limit_locks (lock_key) VALUES (?)
+       ON CONFLICT(lock_key) DO UPDATE SET lock_key = excluded.lock_key`,
       [key]
     );
-  } catch (err) {
-    if (!isDuplicateKey(err)) throw err;
+  } else {
+    await conn.execute(
+      `INSERT INTO rate_limit_locks (lock_key) VALUES (?)
+       ON DUPLICATE KEY UPDATE lock_key = lock_key`,
+      [key]
+    );
   }
   await conn.execute(
     "SELECT lock_key FROM rate_limit_locks WHERE lock_key = ? FOR UPDATE",
@@ -901,7 +917,23 @@ async function holdProductStock(conn, productId, quantity) {
  * A token that already has an order is a replay: same id, no stock change,
  * no mail permit.
  */
-async function placeCheckoutOrder({
+async function placeCheckoutOrder(input) {
+  const retries = readPositive("CHECKOUT_LOCK_RETRIES", 5);
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await placeCheckoutOrderOnce(input);
+    } catch (err) {
+      lastErr = err;
+      if (!isLockConflict(err) || attempt === retries) throw err;
+      const waitMs = 8 * attempt + Math.floor(Math.random() * 30);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+  throw lastErr;
+}
+
+async function placeCheckoutOrderOnce({
   token,
   sessionId,
   email,
@@ -1034,10 +1066,19 @@ async function placeCheckoutOrder({
       throw err;
     }
 
-    await conn.execute(
-      "INSERT IGNORE INTO ip_order_counts (ip_address, order_count) VALUES (?, 0)",
-      [ip]
-    );
+    if (getPool().__sqlite) {
+      await conn.execute(
+        `INSERT INTO ip_order_counts (ip_address, order_count) VALUES (?, 0)
+         ON CONFLICT(ip_address) DO UPDATE SET ip_address = excluded.ip_address`,
+        [ip]
+      );
+    } else {
+      await conn.execute(
+        `INSERT INTO ip_order_counts (ip_address, order_count) VALUES (?, 0)
+         ON DUPLICATE KEY UPDATE ip_address = ip_address`,
+        [ip]
+      );
+    }
     const [ipRows] = await conn.execute(
       "SELECT order_count FROM ip_order_counts WHERE ip_address = ? FOR UPDATE",
       [ip]
@@ -1174,11 +1215,18 @@ function mailRetrySettings() {
   const baseMs = readNonNegative("MAIL_RETRY_BASE_MS", 30000);
   const maxDelayMs = readPositive("MAIL_RETRY_MAX_MS", 15 * 60 * 1000);
   const leaseMs = readPositive("MAIL_SEND_LEASE_MS", 120000);
+  const lease = leaseMs > 0 ? leaseMs : 120000;
+  // SMTP must finish before the lease can expire, or a second worker can
+  // steal the claim while the first send is still on the wire.
+  const halfLease = Math.max(1, Math.floor(lease / 2));
+  const requestedTimeout = readPositive("MAIL_SMTP_TIMEOUT_MS", halfLease);
+  const smtpTimeoutMs = Math.min(requestedTimeout, halfLease);
   return {
     maxAttempts: maxAttempts > 0 ? maxAttempts : 5,
     baseMs,
     maxDelayMs: maxDelayMs > 0 ? maxDelayMs : 15 * 60 * 1000,
-    leaseMs: leaseMs > 0 ? leaseMs : 120000,
+    leaseMs: lease,
+    smtpTimeoutMs,
   };
 }
 
@@ -1282,6 +1330,20 @@ async function claimMailOutbox(id, settings) {
   }
 }
 
+/**
+ * Keep a live send's lease fresh. Returns false when this claim no longer
+ * owns the row (another worker fenced it). Callers must not mark sent then.
+ */
+async function renewMailClaim(id, claimToken) {
+  const [result] = await getPool().execute(
+    `UPDATE mail_outbox
+        SET claimed_at = ?
+      WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+    [String(Date.now()), id, claimToken]
+  );
+  return result.affectedRows > 0;
+}
+
 async function finishMailOutbox(id, claimToken, outcome) {
   const conn = await getPool().getConnection();
   try {
@@ -1316,13 +1378,22 @@ async function finishMailOutbox(id, claimToken, outcome) {
         ]
       );
     } else {
+      // requeue (missing SMTP config) gives the attempt back so the cap
+      // cannot turn "not configured yet" into a permanent dead letter.
       await conn.execute(
         `UPDATE mail_outbox
             SET status = 'pending',
+                attempts = CASE
+                  WHEN ? = 1 AND attempts > 0 THEN attempts - 1
+                  ELSE attempts
+                END,
                 last_error = ?,
-                next_attempt_at = ?
+                next_attempt_at = ?,
+                claim_token = NULL,
+                claimed_at = NULL
           WHERE id = ? AND claim_token = ? AND status = 'sending'`,
         [
+          outcome.requeue ? 1 : 0,
           String(outcome.error || "send failed").slice(0, 500),
           String(outcome.nextAttemptAt || Date.now()),
           id,
@@ -1931,6 +2002,7 @@ module.exports = {
   mailRetrySettings,
   listDueMail,
   claimMailOutbox,
+  renewMailClaim,
   finishMailOutbox,
   getMailOutboxByOrderId,
   listOrders,
