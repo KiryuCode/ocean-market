@@ -310,6 +310,35 @@ function configSkip(result) {
   return /smtp not configured/i.test(reason);
 }
 
+function watchLateDelivery(sendPromise, claimed) {
+  sendPromise.then(
+    (value) => recordLateDelivery(claimed, value),
+    (err) =>
+      recordLateDelivery(claimed, {
+        ok: false,
+        error: err.message || String(err),
+      })
+  );
+}
+
+async function recordLateDelivery(claimed, value) {
+  try {
+    if (value && value.ok) {
+      await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+        sent: true,
+        messageId: value.messageId || "",
+      });
+      return;
+    }
+    await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+      lateFailure: true,
+      error: (value && (value.error || value.reason)) || "send failed",
+    });
+  } catch (err) {
+    console.error("[mail] Late delivery result was not recorded:", err);
+  }
+}
+
 async function deliverOutboxRow(row, settings) {
   const claimed = await db.claimMailOutbox(row.id, settings);
   if (!claimed) return { skipped: true, id: row.id, reason: "not claimed" };
@@ -333,7 +362,6 @@ async function deliverOutboxRow(row, settings) {
   if (typeof renewTimer.unref === "function") renewTimer.unref();
 
   let result;
-  let timedOut = false;
   try {
     const order = await db.getOrder(claimed.orderId);
     if (!order) {
@@ -347,31 +375,49 @@ async function deliverOutboxRow(row, settings) {
         lineItems,
         subtotal,
         hasPrices,
-        timeoutMs: settings.smtpTimeoutMs,
+        // Let the socket live through the grace window. The wait below is
+        // shorter and does not cancel a delivery that completes late.
+        timeoutMs:
+          settings.smtpTimeoutMs +
+          settings.unknownGraceMs +
+          settings.unknownRetryBufferMs,
         signal: controller.signal,
       });
       let timer;
       const timeout = new Promise((resolve) => {
         timer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-          resolve({ ok: false, error: "SMTP timed out" });
+          resolve({ __timedOut: true });
         }, settings.smtpTimeoutMs);
       });
-      result = await Promise.race([sendPromise, timeout]);
+      const raced = await Promise.race([
+        sendPromise.then(
+          (value) => ({ __timedOut: false, value }),
+          (err) => ({
+            __timedOut: false,
+            value: { ok: false, error: err.message || String(err) },
+          })
+        ),
+        timeout,
+      ]);
       clearTimeout(timer);
-      if (timedOut) {
-        // The claim stays ours until the send settles, so a second worker
-        // cannot start another SMTP session for this order.
-        await Promise.race([
-          sendPromise.then(
-            () => {},
-            () => {}
-          ),
-          new Promise((resolve) => setTimeout(resolve, settings.smtpTimeoutMs)),
-        ]);
-        result = { ok: false, error: "SMTP timed out" };
+      if (raced.__timedOut) {
+        clearInterval(renewTimer);
+        const retryAt =
+          Date.now() + settings.unknownGraceMs + settings.unknownRetryBufferMs;
+        const marked = await db.finishMailOutbox(claimed.id, claimed.claimToken, {
+          unknown: true,
+          error: "SMTP timed out",
+          nextAttemptAt: String(retryAt),
+        });
+        if (marked) watchLateDelivery(sendPromise, claimed);
+        return {
+          ok: false,
+          id: claimed.id,
+          unknown: true,
+          error: "SMTP timed out",
+        };
       }
+      result = raced.value;
     }
   } catch (err) {
     result = { ok: false, error: err.message || String(err) };

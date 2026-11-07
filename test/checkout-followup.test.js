@@ -126,6 +126,7 @@ describe("checkout follow-up", { concurrency: false }, () => {
     delete process.env.MAIL_MAX_ATTEMPTS;
     delete process.env.MAIL_SEND_LEASE_MS;
     delete process.env.MAIL_SMTP_TIMEOUT_MS;
+    delete process.env.MAIL_UNKNOWN_GRACE_MS;
     await db.clearAbuseEvents();
     await db.resetIpCount();
   });
@@ -389,32 +390,34 @@ describe("checkout follow-up", { concurrency: false }, () => {
     assert.equal(sent.length, 1);
   });
 
-  test("a send still inside its lease cannot be stolen", async () => {
-    process.env.MAIL_SEND_LEASE_MS = "240";
-    process.env.MAIL_RETRY_BASE_MS = "0";
-    await db.updateProductPricing("rosemary", { qtyAvailable: 4 });
-    const settings = db.mailRetrySettings();
-    assert.ok(settings.smtpTimeoutMs < settings.leaseMs);
+  async function waitFor(predicate) {
+    const deadline = Date.now() + 2000;
+    let last;
+    while (Date.now() < deadline) {
+      last = await predicate();
+      if (last) return last;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return last;
+  }
 
-    let calls = 0;
+  test("finishMailOutbox ignores a stolen claim token", async () => {
+    process.env.MAIL_SEND_LEASE_MS = "20000";
+    process.env.MAIL_SMTP_TIMEOUT_MS = "8000";
+    await db.updateProductPricing("rosemary", { qtyAvailable: 4 });
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
     let markStarted;
     const started = new Promise((resolve) => {
       markStarted = resolve;
     });
-    mail.sendOrderConfirmation = async ({ signal }) => {
-      calls += 1;
+    mail.sendOrderConfirmation = async () => {
       markStarted();
-      await new Promise((resolve, reject) => {
-        const abort = () => reject(new Error("aborted"));
-        if (signal && signal.aborted) {
-          abort();
-          return;
-        }
-        if (signal) signal.addEventListener("abort", abort, { once: true });
-      });
-      return { ok: true, messageId: "late" };
+      await gate;
+      return { ok: true, messageId: "owner" };
     };
-
     const agent = request.agent(app);
     const form = await openBuy(agent, "rosemary");
     const checkout = postConfirm(agent, {
@@ -422,30 +425,173 @@ describe("checkout follow-up", { concurrency: false }, () => {
       checkout_token: form.checkoutToken,
       mode: "buy_now",
       product_id: "rosemary",
-      email: "lease@example.com",
+      email: "stolen-token@example.com",
     });
     await started;
-    assert.equal(calls, 1);
-    await mail.drainOutbox();
-    assert.equal(calls, 1);
+    const order = (await db.listOrders()).find(
+      (row) => row.email === "stolen-token@example.com"
+    );
+    const box = await db.getMailOutboxByOrderId(order.order_id);
+    assert.equal(box.status, "sending");
+    const stolen = await db.finishMailOutbox(box.id, "not-the-claim-token", {
+      sent: true,
+      messageId: "stolen",
+    });
+    assert.equal(stolen, false);
+    const unchanged = await db.getMailOutboxByOrderId(order.order_id);
+    assert.equal(unchanged.status, "sending");
+    assert.equal(unchanged.messageId, null);
+    release();
+    const res = await checkout;
+    assert.equal(res.status, 200);
+    const done = await db.getMailOutboxByOrderId(order.order_id);
+    assert.equal(done.status, "sent");
+    assert.equal(done.messageId, "owner");
+  });
+
+  test("SMTP timeout is delivery-unknown and a late success is not retried", async () => {
+    process.env.MAIL_SEND_LEASE_MS = "4000";
+    process.env.MAIL_SMTP_TIMEOUT_MS = "50";
+    process.env.MAIL_UNKNOWN_GRACE_MS = "60000";
+    await db.updateProductPricing("rosemary", { qtyAvailable: 4 });
+    let calls = 0;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
+    mail.sendOrderConfirmation = async () => {
+      calls += 1;
+      markStarted();
+      return gate;
+    };
+    const agent = request.agent(app);
+    const form = await openBuy(agent, "rosemary");
+    const checkout = postConfirm(agent, {
+      _csrf: form.csrf,
+      checkout_token: form.checkoutToken,
+      mode: "buy_now",
+      product_id: "rosemary",
+      email: "late-ok@example.com",
+    });
+    await started;
     const res = await checkout;
     assert.equal(res.status, 200);
     assert.equal(calls, 1);
     const orderId = orderIdOf(res.text);
     let box = await db.getMailOutboxByOrderId(orderId);
-    assert.equal(box.status, "pending");
+    assert.equal(box.status, "unknown");
+    assert.match(box.lastError, /timed out/i);
+    await mail.drainOutbox();
+    assert.equal(calls, 1);
 
+    release({ ok: true, messageId: "late-ok" });
+    const recorded = await waitFor(async () => {
+      const row = await db.getMailOutboxByOrderId(orderId);
+      return row.status === "sent" ? row : null;
+    });
+    assert.ok(recorded);
+    assert.equal(recorded.messageId, "late-ok");
+    await mail.drainOutbox();
+    assert.equal(calls, 1);
+  });
+
+  test("SMTP timeout retries only after the grace period when no late success arrived", async () => {
+    process.env.MAIL_SEND_LEASE_MS = "4000";
+    process.env.MAIL_SMTP_TIMEOUT_MS = "50";
+    process.env.MAIL_UNKNOWN_GRACE_MS = "60000";
+    await db.updateProductPricing("thyme", { qtyAvailable: 4 });
+    let calls = 0;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
     mail.sendOrderConfirmation = async () => {
       calls += 1;
-      return { ok: true, messageId: "only-delivery" };
+      if (calls === 1) {
+        markStarted();
+        return gate;
+      }
+      return { ok: true, messageId: "after-grace" };
     };
+    const agent = request.agent(app);
+    const form = await openBuy(agent, "thyme");
+    const checkout = postConfirm(agent, {
+      _csrf: form.csrf,
+      checkout_token: form.checkoutToken,
+      mode: "buy_now",
+      product_id: "thyme",
+      email: "after-grace@example.com",
+    });
+    await started;
+    const res = await checkout;
+    assert.equal(res.status, 200);
+    const orderId = orderIdOf(res.text);
+    assert.equal((await db.getMailOutboxByOrderId(orderId)).status, "unknown");
+    await mail.drainOutbox();
+    assert.equal(calls, 1);
+
+    await db.setMailOutboxNextAttemptAt(orderId, Date.now() - 1000);
     await mail.drainOutbox();
     assert.equal(calls, 2);
-    box = await db.getMailOutboxByOrderId(orderId);
+    const box = await db.getMailOutboxByOrderId(orderId);
     assert.equal(box.status, "sent");
-    assert.equal(box.messageId, "only-delivery");
+    assert.equal(box.messageId, "after-grace");
+
+    release({ ok: true, messageId: "too-late" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const afterLate = await db.getMailOutboxByOrderId(orderId);
+    assert.equal(afterLate.status, "sent");
+    assert.equal(afterLate.messageId, "after-grace");
     await mail.drainOutbox();
     assert.equal(calls, 2);
+  });
+
+  test("a late SMTP failure is recorded and does not count as success", async () => {
+    process.env.MAIL_SEND_LEASE_MS = "4000";
+    process.env.MAIL_SMTP_TIMEOUT_MS = "50";
+    process.env.MAIL_UNKNOWN_GRACE_MS = "60000";
+    await db.updateProductPricing("purple-coneflower", { qtyAvailable: 4 });
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let markStarted;
+    const started = new Promise((resolve) => {
+      markStarted = resolve;
+    });
+    mail.sendOrderConfirmation = async () => {
+      markStarted();
+      return gate;
+    };
+    const agent = request.agent(app);
+    const form = await openBuy(agent, "purple-coneflower");
+    const checkout = postConfirm(agent, {
+      _csrf: form.csrf,
+      checkout_token: form.checkoutToken,
+      mode: "buy_now",
+      product_id: "purple-coneflower",
+      email: "late-fail@example.com",
+    });
+    await started;
+    const res = await checkout;
+    assert.equal(res.status, 200);
+    const orderId = orderIdOf(res.text);
+    release({ ok: false, error: "smtp rejected" });
+    const recorded = await waitFor(async () => {
+      const row = await db.getMailOutboxByOrderId(orderId);
+      return row && /smtp rejected/.test(row.lastError || "") ? row : null;
+    });
+    assert.ok(recorded);
+    assert.equal(recorded.status, "unknown");
+    assert.equal(recorded.messageId, null);
   });
 
   test("missing SMTP config stays retryable and sends once it is available", async () => {

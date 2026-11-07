@@ -1221,12 +1221,17 @@ function mailRetrySettings() {
   const halfLease = Math.max(1, Math.floor(lease / 2));
   const requestedTimeout = readPositive("MAIL_SMTP_TIMEOUT_MS", halfLease);
   const smtpTimeoutMs = Math.min(requestedTimeout, halfLease);
+  // After we stop waiting, the SMTP conversation may still accept the message.
+  // Wait out this grace, plus a short buffer, before any retry.
+  const unknownGraceMs = readPositive("MAIL_UNKNOWN_GRACE_MS", lease);
   return {
     maxAttempts: maxAttempts > 0 ? maxAttempts : 5,
     baseMs,
     maxDelayMs: maxDelayMs > 0 ? maxDelayMs : 15 * 60 * 1000,
     leaseMs: lease,
     smtpTimeoutMs,
+    unknownGraceMs,
+    unknownRetryBufferMs: 5000,
   };
 }
 
@@ -1270,10 +1275,11 @@ async function listDueMail(limit, settings) {
         AND (
           (status = 'pending' AND next_attempt_at <= ?)
           OR (status = 'sending' AND (claimed_at IS NULL OR claimed_at <= ?))
+          OR (status = 'unknown' AND next_attempt_at <= ? AND (message_id IS NULL OR message_id = ''))
         )
       ORDER BY id ASC
       LIMIT ${cap}`,
-    [settings.maxAttempts, now, leaseBefore]
+    [settings.maxAttempts, now, leaseBefore, now]
   );
   return rows.map(mapOutbox);
 }
@@ -1301,8 +1307,9 @@ async function claimMailOutbox(id, settings) {
           AND (
             (status = 'pending' AND next_attempt_at <= ?)
             OR (status = 'sending' AND (claimed_at IS NULL OR claimed_at <= ?))
+            OR (status = 'unknown' AND next_attempt_at <= ? AND (message_id IS NULL OR message_id = ''))
           )`,
-      [now, claimToken, id, settings.maxAttempts, now, leaseBefore]
+      [now, claimToken, id, settings.maxAttempts, now, leaseBefore, now]
     );
     if (!result.affectedRows) {
       await conn.rollback();
@@ -1346,16 +1353,20 @@ async function renewMailClaim(id, claimToken) {
 
 async function finishMailOutbox(id, claimToken, outcome) {
   const conn = await getPool().getConnection();
+  let applied = false;
   try {
     await conn.beginTransaction();
+    let result;
     if (outcome.sent) {
-      await conn.execute(
+      // A late success may arrive after we stopped waiting (status unknown).
+      // A token that no longer owns the row changes nothing.
+      [result] = await conn.execute(
         `UPDATE mail_outbox
             SET status = 'sent',
                 sent_at = ?,
                 message_id = ?,
                 last_error = NULL
-          WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+          WHERE id = ? AND claim_token = ? AND status IN ('sending', 'unknown')`,
         [
           new Date().toISOString(),
           outcome.messageId ? String(outcome.messageId).slice(0, 255) : null,
@@ -1363,8 +1374,29 @@ async function finishMailOutbox(id, claimToken, outcome) {
           claimToken,
         ]
       );
+    } else if (outcome.unknown) {
+      [result] = await conn.execute(
+        `UPDATE mail_outbox
+            SET status = 'unknown',
+                last_error = ?,
+                next_attempt_at = ?
+          WHERE id = ? AND claim_token = ? AND status = 'sending'`,
+        [
+          String(outcome.error || "SMTP timed out").slice(0, 500),
+          String(outcome.nextAttemptAt || Date.now()),
+          id,
+          claimToken,
+        ]
+      );
+    } else if (outcome.lateFailure) {
+      [result] = await conn.execute(
+        `UPDATE mail_outbox
+            SET last_error = ?
+          WHERE id = ? AND claim_token = ? AND status = 'unknown'`,
+        [String(outcome.error || "send failed").slice(0, 500), id, claimToken]
+      );
     } else if (outcome.dead || outcome.terminal) {
-      await conn.execute(
+      [result] = await conn.execute(
         `UPDATE mail_outbox
             SET status = 'dead',
                 last_error = ?,
@@ -1380,7 +1412,7 @@ async function finishMailOutbox(id, claimToken, outcome) {
     } else {
       // requeue (missing SMTP config) gives the attempt back so the cap
       // cannot turn "not configured yet" into a permanent dead letter.
-      await conn.execute(
+      [result] = await conn.execute(
         `UPDATE mail_outbox
             SET status = 'pending',
                 attempts = CASE
@@ -1401,7 +1433,9 @@ async function finishMailOutbox(id, claimToken, outcome) {
         ]
       );
     }
+    applied = Boolean(result && result.affectedRows);
     await conn.commit();
+    return applied;
   } catch (err) {
     try {
       await conn.rollback();
@@ -1412,6 +1446,16 @@ async function finishMailOutbox(id, claimToken, outcome) {
   } finally {
     conn.release();
   }
+}
+
+async function setMailOutboxNextAttemptAt(orderId, nextAttemptAt) {
+  const n = parseInt(String(orderId), 10);
+  if (!Number.isFinite(n) || n < 1) return false;
+  const [result] = await getPool().execute(
+    "UPDATE mail_outbox SET next_attempt_at = ? WHERE order_id = ?",
+    [String(nextAttemptAt), n]
+  );
+  return result.affectedRows > 0;
 }
 
 async function getMailOutboxByOrderId(orderId) {
@@ -2004,6 +2048,7 @@ module.exports = {
   claimMailOutbox,
   renewMailClaim,
   finishMailOutbox,
+  setMailOutboxNextAttemptAt,
   getMailOutboxByOrderId,
   listOrders,
   listShipQueue,
