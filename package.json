@@ -8,7 +8,8 @@
     "dev": "node --watch app.js",
     "db:init": "node scripts/init-db.js",
     "admin:hash": "node scripts/hash-admin-password.js",
-    "pack": "bash scripts/pack-deploy.sh"
+    "pack": "bash scripts/pack-deploy.sh",
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -22,5 +23,9 @@
     "multer": "^2.2.0",
     "mysql2": "^3.23.2",
     "nodemailer": "^10.2.1"
+  },
+  "devDependencies": {
+    "sql.js": "^1.15.2",
+    "supertest": "^7.3.1"
   }
 }

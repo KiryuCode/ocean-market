@@ -2,20 +2,25 @@
  * MySQL helpers for orders, products, and per-IP rate limiting.
  *
  * Tables:
- *   - products:        catalog (editable from admin, with photo uploads)
- *   - orders:          order_id (integer, shown as 0001), product ordered, email, timestamp,
- *                      status, tracking number, carrier, shipped timestamp
- *   - ip_order_counts: ip_address, order_count  (separate table for the 20/order limit)
+ *   - products:         catalog (editable from admin, with photo uploads)
+ *   - orders:           order_id (integer, shown as 0001), product ordered, email, timestamp,
+ *                       status, tracking, and stock_reserved (1 = checkout already held stock)
+ *   - ip_order_counts:  ip_address, order_count  (lifetime cap, separate from windowed throttles)
+ *   - sessions:         server-side session records (cookie holds only the id)
+ *   - checkout_tokens:  single-use confirm-form keys
+ *   - abuse_events:     per-IP and per-email windows for order create and order mail
  *
  * Connection settings come from .env (MYSQL_*). Create the database first with:
  *   mysql -u root -p < scripts/init-ocean.sql
  */
 
+const crypto = require("crypto");
 const mysql = require("mysql2/promise");
 
 const {
   MAX_ORDERS_PER_IP,
   DEFAULT_PRODUCTS,
+  getAbuseLimits,
   getMysqlConfig,
 } = require("./config");
 
@@ -27,6 +32,9 @@ const DEFAULT_QTY = 25;
 
 /** @type {import("mysql2/promise").Pool | null} */
 let pool = null;
+
+/** True after initDb has created the schema for this process. */
+let dbReady = false;
 
 function formatOrderId(orderId) {
   const n = Number(orderId);
@@ -133,6 +141,7 @@ async function initDb() {
       tracking_number  VARCHAR(128) NULL,
       carrier          VARCHAR(64)  NULL,
       shipped_at       VARCHAR(64)  NULL,
+      stock_reserved   TINYINT      NOT NULL DEFAULT 0,
       PRIMARY KEY (order_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
@@ -147,12 +156,47 @@ async function initDb() {
   await ensureColumn(p, "orders", "tracking_number", "VARCHAR(128) NULL");
   await ensureColumn(p, "orders", "carrier", "VARCHAR(64) NULL");
   await ensureColumn(p, "orders", "shipped_at", "VARCHAR(64) NULL");
+  // 0 = legacy order, stock is still taken at ship. 1 = checkout already took it.
+  // Default 0 so existing rows keep today's ship behavior. No order rows are rewritten.
+  await ensureColumn(p, "orders", "stock_reserved", "TINYINT NOT NULL DEFAULT 0");
 
   await p.query(`
     CREATE TABLE IF NOT EXISTS ip_order_counts (
       ip_address  VARCHAR(64) NOT NULL,
       order_count INT         NOT NULL DEFAULT 0,
       PRIMARY KEY (ip_address)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      session_id  VARCHAR(128) NOT NULL,
+      data        TEXT         NOT NULL,
+      expires_at  VARCHAR(32)  NOT NULL,
+      PRIMARY KEY (session_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS checkout_tokens (
+      token        VARCHAR(64)  NOT NULL,
+      session_id   VARCHAR(128) NOT NULL,
+      intent       TEXT         NOT NULL,
+      created_at   VARCHAR(64)  NOT NULL,
+      order_id     INT          NULL,
+      consumed_at  VARCHAR(64)  NULL,
+      PRIMARY KEY (token)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS abuse_events (
+      id          INT          NOT NULL AUTO_INCREMENT,
+      action      VARCHAR(32)  NOT NULL,
+      ip_address  VARCHAR(64)  NOT NULL,
+      email       VARCHAR(255) NULL,
+      created_at  VARCHAR(32)  NOT NULL,
+      PRIMARY KEY (id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
@@ -195,6 +239,8 @@ async function initDb() {
       conn.release();
     }
   }
+
+  dbReady = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,57 +392,469 @@ async function canPlaceOrder(ipAddress) {
   return (await getIpOrderCount(ipAddress)) < MAX_ORDERS_PER_IP;
 }
 
-async function createOrder({ productId, productName, email, phone, ipAddress }) {
+function orderError(message, code) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function orderTimestamp() {
+  return new Date()
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d{3}Z$/, " UTC");
+}
+
+function normalizeLimitEmail(email) {
+  const clean = String(email || "").trim().toLowerCase();
+  return clean || null;
+}
+
+function mergeIntentLines(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    throw orderError(
+      "This checkout form is invalid or expired. Go back and try again.",
+      "INVALID_CHECKOUT"
+    );
+  }
+  const map = new Map();
+  for (const line of lines) {
+    const productId = String((line && line.productId) || "").trim();
+    const quantity = Math.floor(Number(line && line.quantity));
+    if (!productId || !Number.isFinite(quantity) || quantity < 1) {
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
+      );
+    }
+    map.set(productId, (map.get(productId) || 0) + quantity);
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([productId, quantity]) => ({ productId, quantity }));
+}
+
+function parseIntent(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw || ""));
+  } catch {
+    throw orderError(
+      "This checkout form is invalid or expired. Go back and try again.",
+      "INVALID_CHECKOUT"
+    );
+  }
+  const mode = parsed && parsed.mode === "cart" ? "cart" : "buy_now";
+  const lines = mergeIntentLines(parsed && parsed.lines);
+  return { mode, lines };
+}
+
+function tokenIsFresh(row) {
+  const created = Date.parse(row && row.created_at);
+  if (!Number.isFinite(created)) return false;
+  return Date.now() - created <= getAbuseLimits().checkoutTtlMs;
+}
+
+/**
+ * One-time key for the confirm form. Stored in the database and bound to
+ * the server session, so a copied POST body cannot be spent twice.
+ */
+async function issueCheckoutToken({ sessionId, intent }) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) {
+    throw orderError(
+      "This checkout form is invalid or expired. Go back and try again.",
+      "INVALID_CHECKOUT"
+    );
+  }
+  const lines = mergeIntentLines(intent && intent.lines);
+  const mode = intent && intent.mode === "cart" ? "cart" : "buy_now";
+  const token = crypto.randomBytes(32).toString("hex");
+  await getPool().execute(
+    `INSERT INTO checkout_tokens (token, session_id, intent, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [token, sid, JSON.stringify({ mode, lines }), new Date().toISOString()]
+  );
+  return token;
+}
+
+async function describeCheckout(token, sessionId) {
+  const [rows] = await getPool().execute(
+    "SELECT session_id, intent FROM checkout_tokens WHERE token = ? LIMIT 1",
+    [String(token || "")]
+  );
+  const row = rows[0];
+  if (!row || row.session_id !== sessionId) return null;
+  let intent;
+  try {
+    intent = parseIntent(row.intent);
+  } catch {
+    return null;
+  }
+  const items = [];
+  for (const line of intent.lines) {
+    const product = await getProduct(line.productId);
+    if (!product) continue;
+    items.push({
+      product,
+      quantity: line.quantity,
+      lineTotal: product.price * line.quantity,
+    });
+  }
+  return { mode: intent.mode, items };
+}
+
+async function countAbuse(conn, action, column, value, since) {
+  const sql =
+    column === "email"
+      ? `SELECT COUNT(*) AS n FROM abuse_events
+          WHERE action = ? AND email = ? AND created_at >= ?`
+      : `SELECT COUNT(*) AS n FROM abuse_events
+          WHERE action = ? AND ip_address = ? AND created_at >= ?`;
+  const [rows] = await conn.execute(sql, [action, value, String(since)]);
+  return Number(rows[0] ? rows[0].n : 0);
+}
+
+async function recordAbuse(conn, action, ipAddress, email) {
+  await conn.execute(
+    `INSERT INTO abuse_events (action, ip_address, email, created_at)
+     VALUES (?, ?, ?, ?)`,
+    [action, ipAddress, email, String(Date.now())]
+  );
+}
+
+async function assertUnderLimit(conn, action, ipAddress, email, limits) {
+  const windowMs = action === "order_mail" ? limits.mailWindowMs : limits.orderWindowMs;
+  const ipLimit = action === "order_mail" ? limits.mailIp : limits.orderIp;
+  const emailLimit = action === "order_mail" ? limits.mailEmail : limits.orderEmail;
+  const since = Date.now() - windowMs;
+  if (ipLimit > 0) {
+    const n = await countAbuse(conn, action, "ip_address", ipAddress, since);
+    if (n >= ipLimit) return false;
+  }
+  if (email && emailLimit > 0) {
+    const n = await countAbuse(conn, action, "email", email, since);
+    if (n >= emailLimit) return false;
+  }
+  return true;
+}
+
+/**
+ * Quantity already promised by unshipped orders that did not hold stock
+ * at checkout (stock_reserved = 0). Those rows are not modified here.
+ */
+async function unreservedUnshippedQty(conn, productId) {
+  const [rows] = await conn.execute(
+    `SELECT product_id, product_name FROM orders
+      WHERE (stock_reserved IS NULL OR stock_reserved = 0)
+        AND (status IS NULL OR LOWER(status) <> 'shipped')
+        AND (shipped_at IS NULL OR TRIM(shipped_at) = '')`
+  );
+  let total = 0;
+  for (const row of rows) {
+    for (const token of parseOrderItemTokens(row)) {
+      if (token.productId === productId) total += token.quantity;
+    }
+  }
+  return total;
+}
+
+/**
+ * Hold stock for one product. Conditional update is the race backstop:
+ * qty_available must cover this order plus legacy unshipped demand.
+ */
+async function holdProductStock(conn, productId, quantity) {
+  const [rows] = await conn.execute(
+    "SELECT id, name, qty_available FROM products WHERE id = ? FOR UPDATE",
+    [productId]
+  );
+  if (!rows[0]) {
+    throw orderError("That product is no longer available.", "OUT_OF_STOCK");
+  }
+  const name = rows[0].name;
+  const onHand = Number(rows[0].qty_available);
+  const available = Number.isFinite(onHand) ? onHand : 0;
+  const unreserved = await unreservedUnshippedQty(conn, productId);
+  const need = quantity + unreserved;
+  if (quantity < 1 || available <= 0 || available < need) {
+    const message =
+      available <= 0 || available - unreserved <= 0
+        ? `${name} is out of stock.`
+        : `${name} does not have enough stock for this order.`;
+    throw orderError(message, "OUT_OF_STOCK");
+  }
+  const [result] = await conn.execute(
+    `UPDATE products
+        SET qty_available = qty_available - ?
+      WHERE id = ?
+        AND qty_available >= ?`,
+    [quantity, productId, need]
+  );
+  if (!result.affectedRows) {
+    throw orderError(`${name} is out of stock.`, "OUT_OF_STOCK");
+  }
+  return name;
+}
+
+/**
+ * Create one order from a checkout token.
+ *
+ * Stock is decremented here (stock_reserved = 1). shipOrder must not
+ * decrement these rows again. Orders placed before this change stay at
+ * stock_reserved 0 and still decrement when they ship.
+ *
+ * A token that already has an order is a replay: same id, no stock change,
+ * no mail permit.
+ */
+async function placeCheckoutOrder({
+  token,
+  sessionId,
+  email,
+  phone,
+  ipAddress,
+  postedMode,
+  postedProductId,
+}) {
+  const limits = getAbuseLimits();
+  const cleanEmail = String(email || "").trim() || null;
+  const limitEmail = normalizeLimitEmail(cleanEmail);
+  const cleanPhone = String(phone || "").trim() || null;
+  const ip = String(ipAddress || "unknown");
   const conn = await getPool().getConnection();
+  let finished = false;
+
+  async function finishRollback() {
+    if (finished) return;
+    finished = true;
+    try {
+      await conn.rollback();
+    } catch (err) {
+      console.error("Checkout rollback failed:", err);
+    }
+  }
+
   try {
     await conn.beginTransaction();
 
-    const [rows] = await conn.execute(
-      "SELECT order_count FROM ip_order_counts WHERE ip_address = ? FOR UPDATE",
-      [ipAddress]
+    const [tokenRows] = await conn.execute(
+      "SELECT token, session_id, intent, order_id, created_at FROM checkout_tokens WHERE token = ? FOR UPDATE",
+      [String(token || "")]
     );
-    const current = rows[0] ? Number(rows[0].order_count) : 0;
-
-    if (current >= MAX_ORDERS_PER_IP) {
-      throw new Error(
-        `Order limit reached for this address (${MAX_ORDERS_PER_IP} orders maximum).`
+    const tokenRow = tokenRows[0];
+    if (!tokenRow || tokenRow.session_id !== sessionId) {
+      await finishRollback();
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
       );
     }
 
-    const createdAt = new Date()
-      .toISOString()
-      .replace("T", " ")
-      .replace(/\.\d{3}Z$/, " UTC");
-    const cleanEmail = (email || "").trim() || null;
-    const cleanPhone = (phone || "").trim() || null;
+    const intent = parseIntent(tokenRow.intent);
+    if (tokenRow.order_id) {
+      await finishRollback();
+      return {
+        replay: true,
+        orderId: formatOrderId(tokenRow.order_id),
+        mode: intent.mode,
+        lines: intent.lines,
+        mailPermitted: false,
+      };
+    }
+    if (!tokenIsFresh(tokenRow)) {
+      await finishRollback();
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
+      );
+    }
+    if (postedMode && postedMode !== intent.mode) {
+      await finishRollback();
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
+      );
+    }
+    if (
+      intent.mode === "buy_now" &&
+      postedProductId &&
+      postedProductId !== intent.lines[0].productId
+    ) {
+      await finishRollback();
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
+      );
+    }
+
+    const allowed = await assertUnderLimit(
+      conn,
+      "order_create",
+      ip,
+      limitEmail,
+      limits
+    );
+    if (!allowed) {
+      await recordAbuse(conn, "order_create", ip, limitEmail);
+      await conn.commit();
+      finished = true;
+      throw orderError(
+        "Too many orders from this network or email address. Wait a while and try again.",
+        "RATE_LIMIT"
+      );
+    }
+
+    const names = new Map();
+    try {
+      for (const line of intent.lines) {
+        const name = await holdProductStock(conn, line.productId, line.quantity);
+        names.set(line.productId, name);
+      }
+    } catch (err) {
+      if (err && err.code === "OUT_OF_STOCK") {
+        // Drop the partial hold, then keep the attempt on the rate-limit log.
+        try {
+          await conn.rollback();
+        } catch (rollbackErr) {
+          console.error("Checkout rollback failed:", rollbackErr);
+        }
+        try {
+          await conn.beginTransaction();
+          await recordAbuse(conn, "order_create", ip, limitEmail);
+          await conn.commit();
+        } catch (recordErr) {
+          console.error("Abuse event record failed:", recordErr);
+          try {
+            await conn.rollback();
+          } catch {
+            /* already rolled back */
+          }
+        }
+        finished = true;
+      }
+      throw err;
+    }
+
+    await conn.execute(
+      "INSERT IGNORE INTO ip_order_counts (ip_address, order_count) VALUES (?, 0)",
+      [ip]
+    );
+    const [ipRows] = await conn.execute(
+      "SELECT order_count FROM ip_order_counts WHERE ip_address = ? FOR UPDATE",
+      [ip]
+    );
+    const current = ipRows[0] ? Number(ipRows[0].order_count) : 0;
+    if (current >= MAX_ORDERS_PER_IP) {
+      await finishRollback();
+      const err = orderError(
+        `Order limit reached for this address (${MAX_ORDERS_PER_IP} orders maximum).`,
+        "ORDER_LIMIT"
+      );
+      throw err;
+    }
+
+    const productId = intent.lines
+      .map((line) => `${line.productId}×${line.quantity}`)
+      .join(", ");
+    const productName = intent.lines
+      .map((line) => {
+        const name = names.get(line.productId) || line.productId;
+        return line.quantity > 1 ? `${name} ×${line.quantity}` : name;
+      })
+      .join(", ");
+    const createdAt = orderTimestamp();
 
     const [insertResult] = await conn.execute(
       `INSERT INTO orders
-         (product_id, product_name, email, phone, ip_address, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [productId, productName, cleanEmail, cleanPhone, ipAddress, createdAt]
+         (product_id, product_name, email, phone, ip_address, created_at, status, stock_reserved)
+       VALUES (?, ?, ?, ?, ?, ?, 'unshipped', 1)`,
+      [productId, productName, cleanEmail, cleanPhone, ip, createdAt]
     );
+    const orderId = formatOrderId(insertResult.insertId);
 
-    if (rows[0]) {
-      await conn.execute(
-        "UPDATE ip_order_counts SET order_count = order_count + 1 WHERE ip_address = ?",
-        [ipAddress]
-      );
-    } else {
-      await conn.execute(
-        "INSERT INTO ip_order_counts (ip_address, order_count) VALUES (?, 1)",
-        [ipAddress]
+    const [consumed] = await conn.execute(
+      `UPDATE checkout_tokens
+          SET order_id = ?, consumed_at = ?
+        WHERE token = ?
+          AND session_id = ?
+          AND order_id IS NULL`,
+      [insertResult.insertId, new Date().toISOString(), tokenRow.token, sessionId]
+    );
+    if (!consumed.affectedRows) {
+      await finishRollback();
+      throw orderError(
+        "This checkout form is invalid or expired. Go back and try again.",
+        "INVALID_CHECKOUT"
       );
     }
 
+    await conn.execute(
+      "UPDATE ip_order_counts SET order_count = order_count + 1 WHERE ip_address = ?",
+      [ip]
+    );
+    await recordAbuse(conn, "order_create", ip, limitEmail);
+
+    const mailPermitted = await assertUnderLimit(
+      conn,
+      "order_mail",
+      ip,
+      limitEmail,
+      limits
+    );
+    if (mailPermitted) {
+      await recordAbuse(conn, "order_mail", ip, limitEmail);
+    }
+
     await conn.commit();
-    return formatOrderId(insertResult.insertId);
+    finished = true;
+    return {
+      replay: false,
+      orderId,
+      mode: intent.mode,
+      lines: intent.lines,
+      mailPermitted,
+    };
   } catch (err) {
-    await conn.rollback();
+    await finishRollback();
     throw err;
   } finally {
     conn.release();
   }
+}
+
+/**
+ * Insert an order that does not hold stock. Used so ship still decrements
+ * rows that were placed before checkout started reserving inventory.
+ * Does not change product quantities and does not send mail.
+ */
+async function insertUnreservedOrder({
+  productId,
+  quantity,
+  productName,
+  email,
+  phone,
+  ipAddress,
+}) {
+  const qty = Math.max(1, Math.floor(Number(quantity) || 1));
+  const id = String(productId || "").trim();
+  if (!id) throw orderError("Product is required.", "VALIDATION");
+  const [result] = await getPool().execute(
+    `INSERT INTO orders
+       (product_id, product_name, email, phone, ip_address, created_at, status, stock_reserved)
+     VALUES (?, ?, ?, ?, ?, ?, 'unshipped', 0)`,
+    [
+      `${id}×${qty}`,
+      productName || id,
+      email || null,
+      phone || null,
+      ipAddress || "historical",
+      orderTimestamp(),
+    ]
+  );
+  return formatOrderId(result.insertId);
+}
+
+async function clearAbuseEvents() {
+  await getPool().query("DELETE FROM abuse_events");
 }
 
 function normalizeOrderStatus(row) {
@@ -514,8 +972,13 @@ async function shipOrder({ orderId, trackingNumber, carrier }) {
     if (current.status === "shipped") {
       await conn.rollback();
       started = false;
-      return { alreadyShipped: true, order: current };
+      return { alreadyShipped: true, stockDecremented: false, order: current };
     }
+
+    // Checkout holds stock and sets stock_reserved. Shipping that order
+    // must not take the same units again. Older rows stay at 0 and still
+    // decrement here, once.
+    const alreadyHeld = Number(row.stock_reserved) === 1;
 
     const tokens = parseOrderItemTokens(row);
     if (!tokens.length) {
@@ -530,53 +993,55 @@ async function shipOrder({ orderId, trackingNumber, carrier }) {
       needed.set(token.productId, (needed.get(token.productId) || 0) + token.quantity);
     }
 
-    const problems = [];
-    const locked = [];
-    for (const productId of [...needed.keys()].sort()) {
-      const [prows] = await conn.execute(
-        "SELECT id, name, qty_available FROM products WHERE id = ? FOR UPDATE",
-        [productId]
-      );
-      const want = needed.get(productId);
-      if (!prows[0]) {
-        problems.push(`${productId} (qty ${want}) is not in the catalog`);
-        continue;
-      }
-      const have = Number(prows[0].qty_available);
-      const available = Number.isFinite(have) ? have : 0;
-      if (available < want) {
-        problems.push(
-          `${prows[0].name} needs ${want} but only ${available} ${
-            available === 1 ? "is" : "are"
-          } available`
+    if (!alreadyHeld) {
+      const problems = [];
+      const locked = [];
+      for (const productId of [...needed.keys()].sort()) {
+        const [prows] = await conn.execute(
+          "SELECT id, name, qty_available FROM products WHERE id = ? FOR UPDATE",
+          [productId]
         );
-      } else {
-        locked.push({ productId, want, name: prows[0].name });
+        const want = needed.get(productId);
+        if (!prows[0]) {
+          problems.push(`${productId} (qty ${want}) is not in the catalog`);
+          continue;
+        }
+        const have = Number(prows[0].qty_available);
+        const available = Number.isFinite(have) ? have : 0;
+        if (available < want) {
+          problems.push(
+            `${prows[0].name} needs ${want} but only ${available} ${
+              available === 1 ? "is" : "are"
+            } available`
+          );
+        } else {
+          locked.push({ productId, want, name: prows[0].name });
+        }
       }
-    }
 
-    if (problems.length) {
-      throw shipError(
-        `Cannot ship order ${current.order_id_display}. ${problems.join(
-          "; "
-        )}. No inventory was changed.`,
-        "INSUFFICIENT_STOCK"
-      );
-    }
-
-    for (const item of locked) {
-      const [result] = await conn.execute(
-        `UPDATE products
-            SET qty_available = qty_available - ?
-          WHERE id = ?
-            AND qty_available >= ?`,
-        [item.want, item.productId, item.want]
-      );
-      if (!result.affectedRows) {
+      if (problems.length) {
         throw shipError(
-          `Cannot ship order ${current.order_id_display}. Stock for ${item.name} changed before it could be reserved. No inventory was changed.`,
+          `Cannot ship order ${current.order_id_display}. ${problems.join(
+            "; "
+          )}. No inventory was changed.`,
           "INSUFFICIENT_STOCK"
         );
+      }
+
+      for (const item of locked) {
+        const [result] = await conn.execute(
+          `UPDATE products
+              SET qty_available = qty_available - ?
+            WHERE id = ?
+              AND qty_available >= ?`,
+          [item.want, item.productId, item.want]
+        );
+        if (!result.affectedRows) {
+          throw shipError(
+            `Cannot ship order ${current.order_id_display}. Stock for ${item.name} changed before it could be reserved. No inventory was changed.`,
+            "INSUFFICIENT_STOCK"
+          );
+        }
       }
     }
 
@@ -590,7 +1055,8 @@ async function shipOrder({ orderId, trackingNumber, carrier }) {
           SET status = 'shipped',
               tracking_number = ?,
               carrier = ?,
-              shipped_at = ?
+              shipped_at = ?,
+              stock_reserved = 1
         WHERE order_id = ?
           AND (status IS NULL OR LOWER(status) <> 'shipped')
           AND (shipped_at IS NULL OR shipped_at = '')`,
@@ -609,12 +1075,14 @@ async function shipOrder({ orderId, trackingNumber, carrier }) {
 
     return {
       alreadyShipped: false,
+      stockDecremented: !alreadyHeld,
       order: mapOrder({
         ...row,
         status: "shipped",
         tracking_number: tracking,
         carrier: carrierValue,
         shipped_at: shippedAt,
+        stock_reserved: 1,
       }),
     };
   } catch (err) {
@@ -848,12 +1316,97 @@ function publicCustomer(customer) {
   return { id: customer.id, email: customer.email, name: customer.name || "" };
 }
 
+function reviveSession(raw) {
+  if (!raw) return null;
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (data && data.cookie && data.cookie.expires) {
+    data.cookie.expires = new Date(data.cookie.expires);
+  }
+  return data;
+}
+
+function sessionExpiry(sess) {
+  const exp = sess && sess.cookie && sess.cookie.expires;
+  if (exp) {
+    const t = new Date(exp).getTime();
+    if (Number.isFinite(t)) return String(t);
+  }
+  const maxAge = sess && sess.cookie && Number(sess.cookie.maxAge);
+  if (Number.isFinite(maxAge) && maxAge > 0) {
+    return String(Date.now() + maxAge);
+  }
+  return String(Date.now() + 7 * 24 * 60 * 60 * 1000);
+}
+
+async function getSession(sid) {
+  if (!dbReady || !sid) return null;
+  const [rows] = await getPool().execute(
+    "SELECT data, expires_at FROM sessions WHERE session_id = ?",
+    [sid]
+  );
+  if (!rows[0]) return null;
+  if (Number(rows[0].expires_at) <= Date.now()) {
+    await destroySession(sid);
+    return null;
+  }
+  return reviveSession(rows[0].data);
+}
+
+async function saveSession(sid, sess) {
+  if (!dbReady || !sid || !sess) return;
+  const data = JSON.stringify(sess);
+  const expires = sessionExpiry(sess);
+  const p = getPool();
+  if (p.__sqlite) {
+    await p.execute(
+      `INSERT INTO sessions (session_id, data, expires_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         data = excluded.data,
+         expires_at = excluded.expires_at`,
+      [sid, data, expires]
+    );
+    return;
+  }
+  await p.execute(
+    `INSERT INTO sessions (session_id, data, expires_at)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       data = VALUES(data),
+       expires_at = VALUES(expires_at)`,
+    [sid, data, expires]
+  );
+}
+
+async function destroySession(sid) {
+  if (!dbReady || !sid) return;
+  await getPool().execute("DELETE FROM sessions WHERE session_id = ?", [sid]);
+}
+
+async function touchSession(sid, sess) {
+  if (!dbReady || !sid) return;
+  await getPool().execute(
+    "UPDATE sessions SET expires_at = ? WHERE session_id = ?",
+    [sessionExpiry(sess), sid]
+  );
+}
+
 /** Close the pool (tests / graceful shutdown). */
 async function closeDb() {
+  dbReady = false;
   if (pool) {
     await pool.end();
     pool = null;
   }
+}
+
+function isReady() {
+  return dbReady;
 }
 
 module.exports = {
@@ -866,9 +1419,14 @@ module.exports = {
   createProduct,
   updateProductImage,
   updateProductPricing,
+  isReady,
   getIpOrderCount,
   canPlaceOrder,
-  createOrder,
+  issueCheckoutToken,
+  describeCheckout,
+  placeCheckoutOrder,
+  insertUnreservedOrder,
+  clearAbuseEvents,
   listOrders,
   listShipQueue,
   shipOrder,
@@ -882,4 +1440,8 @@ module.exports = {
   getCustomerById,
   createCustomer,
   publicCustomer,
+  getSession,
+  saveSession,
+  destroySession,
+  touchSession,
 };

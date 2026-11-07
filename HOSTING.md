@@ -135,6 +135,9 @@ Notes:
 - Gmail app passwords: spaces optional; without spaces is simplest in `.env`
 - Set a strong `ADMIN_PASSWORD` in `.env`, or store only `ADMIN_PASSWORD_HASH` (`npm run admin:hash -- 'your-password'`)
 - `MYSQL_SSL=true` encrypts the MySQL connection. Provider self-signed chains (Aiven) are accepted unless you set `MYSQL_SSL_CA` (project CA from the service overview) or `MYSQL_SSL_REJECT_UNAUTHORIZED=true`.
+- Checkout sessions are stored in MySQL (`sessions`). `COOKIE_SECURE=true` marks the session cookie Secure; it is always httpOnly and SameSite=Lax.
+- Order and mail throttles (optional, defaults shown in `.env.example`): `ORDER_RATE_LIMIT_IP`, `ORDER_RATE_LIMIT_EMAIL`, `ORDER_RATE_WINDOW_SEC`, `MAIL_RATE_LIMIT_IP`, `MAIL_RATE_LIMIT_EMAIL`, `MAIL_RATE_WINDOW_SEC`. `CHECKOUT_TOKEN_TTL_SEC` is how long an unused confirm form stays valid (default 2 hours). Set a limit to `0` to turn that one counter off. The lifetime per-IP cap in `config.js` (`MAX_ORDERS_PER_IP`) still applies.
+- On startup the app adds `orders.stock_reserved` (default 0, existing rows are not rewritten) plus `sessions`, `checkout_tokens`, and `abuse_events`. `scripts/migrate-checkout-guards.sql` is the same change for a manual run. New checkouts decrement stock immediately. Shipping decrements only orders that were not already held (`stock_reserved = 0`).
 
 ---
 

@@ -38,6 +38,10 @@
       </div>
     <% } %>
 
+    <% if (typeof formError !== 'undefined' && formError) { %>
+      <div class="alert alert-error" role="alert"><%= formError %></div>
+    <% } %>
+
     <div class="instructions">
       <strong>What happens next</strong>
       <ol>
@@ -50,6 +54,7 @@
 
     <form method="post" action="/confirm">
       <%- include('partials/csrf') %>
+      <input type="hidden" name="checkout_token" value="<%= typeof checkoutToken !== 'undefined' ? checkoutToken : '' %>">
       <input type="hidden" name="mode" value="<%= mode %>">
       <% if (!isCart && product) { %>
         <input type="hidden" name="product_id" value="<%= product.id %>">

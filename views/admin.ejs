@@ -75,7 +75,8 @@
       <h2 class="section-title">Ship (<%= unshippedCount %> unshipped)</h2>
       <p class="ship-lead">
         Unshipped orders are listed first. Select one, click Ship, and enter a tracking number.
-        Stock is reduced by the ordered quantity once. Shipping the same order again does not reduce it again.
+        New orders already hold stock at checkout, so shipping them does not reduce it again.
+        Older unshipped orders still reduce stock once, when they ship. Shipping the same order again does not reduce it again.
       </p>
 
       <% if (shipNotice && shipNotice.message) { %>

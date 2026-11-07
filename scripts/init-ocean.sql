@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS orders (
   tracking_number  VARCHAR(128) NULL,
   carrier          VARCHAR(64)  NULL,
   shipped_at       VARCHAR(64)  NULL,
+  stock_reserved   TINYINT      NOT NULL DEFAULT 0,
   PRIMARY KEY (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -57,4 +58,30 @@ CREATE TABLE IF NOT EXISTS ip_order_counts (
   ip_address  VARCHAR(64) NOT NULL,
   order_count INT         NOT NULL DEFAULT 0,
   PRIMARY KEY (ip_address)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id  VARCHAR(128) NOT NULL,
+  data        TEXT         NOT NULL,
+  expires_at  VARCHAR(32)  NOT NULL,
+  PRIMARY KEY (session_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS checkout_tokens (
+  token        VARCHAR(64)  NOT NULL,
+  session_id   VARCHAR(128) NOT NULL,
+  intent       TEXT         NOT NULL,
+  created_at   VARCHAR(64)  NOT NULL,
+  order_id     INT          NULL,
+  consumed_at  VARCHAR(64)  NULL,
+  PRIMARY KEY (token)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS abuse_events (
+  id          INT          NOT NULL AUTO_INCREMENT,
+  action      VARCHAR(32)  NOT NULL,
+  ip_address  VARCHAR(64)  NOT NULL,
+  email       VARCHAR(255) NULL,
+  created_at  VARCHAR(32)  NOT NULL,
+  PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

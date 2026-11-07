@@ -25,6 +25,7 @@ const db = require("./db");
 const cart = require("./cart");
 const mail = require("./mail");
 const csrf = require("./csrf");
+const DbSessionStore = require("./session-store");
 const {
   STORE_NAME,
   STORE_TAGLINE,
@@ -105,7 +106,9 @@ app.use((req, res, next) => {
 });
 
 // Correct client IPs / secure cookies when reverse-proxied (nginx, Caddy, etc.)
-if (process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true") {
+const trustProxy =
+  process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
+if (trustProxy) {
   app.set("trust proxy", 1);
 }
 
@@ -146,14 +149,21 @@ app.use(
   session({
     name: "ocean.sid",
     secret: process.env.SESSION_SECRET || "change-me-ocean-market-session",
+    store: new DbSessionStore(),
+    proxy: trustProxy,
     resave: false,
     saveUninitialized: false,
+    genid() {
+      return crypto.randomBytes(32).toString("hex");
+    },
     cookie: {
       maxAge: 7 * 24 * 60 * 60 * 1000,
       httpOnly: true,
       sameSite: "lax",
-      // Set cookie Secure flag when served over HTTPS (requires TRUST_PROXY behind TLS)
-      secure: process.env.COOKIE_SECURE === "1" || process.env.COOKIE_SECURE === "true",
+      path: "/",
+      // Secure when the site is HTTPS. bb4 sets COOKIE_SECURE=true in production.
+      secure:
+        process.env.COOKIE_SECURE === "1" || process.env.COOKIE_SECURE === "true",
     },
   })
 );
@@ -262,16 +272,12 @@ function escapeXml(value) {
 }
 
 function clientIp(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  let ip =
-    typeof forwarded === "string" && forwarded.length > 0
-      ? forwarded.split(",")[0].trim()
-      : req.socket.remoteAddress || "unknown";
-
-  if (ip.startsWith("::ffff:")) {
-    ip = ip.slice(7);
-  }
-  return ip;
+  // Use Express's req.ip so X-Forwarded-For is honored only when TRUST_PROXY
+  // is on. Reading the header directly let a client pick a fresh address and
+  // slip past the per-IP order cap.
+  let ip = String(req.ip || (req.socket && req.socket.remoteAddress) || "unknown").trim();
+  if (ip.startsWith("::ffff:")) ip = ip.slice(7);
+  return ip || "unknown";
 }
 
 function isAdminSession(req) {
@@ -470,11 +476,23 @@ app.get("/cart/checkout", async (req, res, next) => {
       });
     }
 
+    const checkoutToken = await db.issueCheckoutToken({
+      sessionId: req.sessionID,
+      intent: {
+        mode: "cart",
+        lines: items.map((item) => ({
+          productId: item.product.id,
+          quantity: item.quantity,
+        })),
+      },
+    });
     res.render("confirm", {
       mode: "cart",
       product: null,
       items,
       total: cart.cartTotal(items),
+      checkoutToken,
+      formError: null,
       seo: buildSeo("confirm", { title: "Confirm cart order" }),
     });
   } catch (err) {
@@ -502,11 +520,21 @@ app.get("/buy/:productId", async (req, res, next) => {
       });
     }
 
+    const items = [{ product, quantity: 1, lineTotal: product.price }];
+    const checkoutToken = await db.issueCheckoutToken({
+      sessionId: req.sessionID,
+      intent: {
+        mode: "buy_now",
+        lines: [{ productId: product.id, quantity: 1 }],
+      },
+    });
     res.render("confirm", {
       mode: "buy_now",
       product,
-      items: [{ product, quantity: 1, lineTotal: product.price }],
+      items,
       total: product.price,
+      checkoutToken,
+      formError: null,
       seo: buildSeo("confirm", {
         title: `Confirm order — ${product.name}`,
         description: product.description
@@ -520,75 +548,123 @@ app.get("/buy/:productId", async (req, res, next) => {
   }
 });
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+async function itemsFromLines(lines) {
+  const items = [];
+  for (const line of lines || []) {
+    const product = await db.getProduct(line.productId);
+    if (!product) continue;
+    items.push({
+      product,
+      quantity: line.quantity,
+      lineTotal: product.price * line.quantity,
+    });
+  }
+  return items;
+}
+
+async function renderConfirmProblem(req, res, status, message, token) {
+  const described = token
+    ? await db.describeCheckout(token, req.sessionID)
+    : null;
+  const items = described ? described.items : [];
+  return res.status(status).render("confirm", {
+    mode: described ? described.mode : "buy_now",
+    product: items.length === 1 ? items[0].product : null,
+    items,
+    total: cart.cartTotal(items),
+    checkoutToken: token || "",
+    formError: message,
+    seo: buildSeo("confirm"),
+  });
+}
+
 app.post("/confirm", async (req, res, next) => {
   try {
-    const mode = String(req.body.mode || "buy_now").trim();
     const email = String(req.body.email || "").trim();
     const phone = String(req.body.phone || "").trim();
+    const postedMode = String(req.body.mode || "").trim();
+    const postedProductId = String(req.body.product_id || "").trim();
+    const token = String(req.body.checkout_token || "").trim();
     const ip = clientIp(req);
 
-    let items = [];
-
-    if (mode === "cart") {
-      items = await cart.getCartItems(cart.getCart(req));
-      if (items.length === 0) {
-        return res.redirect("/cart");
-      }
-    } else {
-      const productId = String(req.body.product_id || "").trim();
-      const product = await db.getProduct(productId);
-      if (!product) {
-        return res.status(404).render("404", { seo: buildSeo("notFound") });
-      }
-      items = [{ product, quantity: 1, lineTotal: product.price }];
+    if (email && (!EMAIL_RE.test(email) || email.length > 255)) {
+      return renderConfirmProblem(
+        req,
+        res,
+        400,
+        "Enter a valid email address, or leave it blank.",
+        token
+      );
+    }
+    if (phone.length > 64) {
+      return renderConfirmProblem(req, res, 400, "Phone number is too long.", token);
     }
 
-    const { productId, productName } = cart.orderFieldsFromItems(items);
-    const total = cart.cartTotal(items);
-
+    let placed;
     try {
-      const orderId = await db.createOrder({
-        productId,
-        productName,
+      placed = await db.placeCheckoutOrder({
+        token,
+        sessionId: req.sessionID,
         email: email || null,
         phone: phone || null,
         ipAddress: ip,
-      });
-
-      if (mode === "cart") {
-        cart.clearCart(req);
-      }
-
-      // Email HTML receipt to EMAIL_TO (non-blocking for the customer response)
-      const order = await db.getOrder(orderId);
-      if (order) {
-        const lineItems = await db.getOrderLineItems(order);
-        const subtotal = db.orderSubtotal(lineItems);
-        const hasPrices = lineItems.every((item) => item.unitPrice !== null);
-        mail
-          .sendOrderConfirmation({ order, lineItems, subtotal, hasPrices })
-          .catch((err) => {
-            console.error("[mail] Unexpected error sending confirmation:", err);
-          });
-      }
-
-      return res.render("success", {
-        orderId,
-        email: email || null,
-        phone: phone || null,
-        items,
-        total,
-        product: items.length === 1 ? items[0].product : null,
-        seo: buildSeo("success"),
+        postedMode,
+        postedProductId,
       });
     } catch (err) {
-      return res.status(429).render("limit", {
-        product: items.length === 1 ? items[0].product : null,
-        items,
-        flashError: err.message,
-        seo: buildSeo("limit"),
-      });
+      if (err && err.code === "INVALID_CHECKOUT") {
+        return res
+          .status(403)
+          .type("html")
+          .send(
+            "<!doctype html><meta charset=utf-8><title>Forbidden</title>" +
+              "<p>This checkout form is invalid or expired. Go back and try again.</p>"
+          );
+      }
+      if (err && err.code === "OUT_OF_STOCK") {
+        return renderConfirmProblem(req, res, 409, err.message, token);
+      }
+      if (err && err.code === "RATE_LIMIT") {
+        return renderConfirmProblem(req, res, 429, err.message, token);
+      }
+      if (err && err.code === "ORDER_LIMIT") {
+        return res.status(429).render("limit", {
+          product: null,
+          items: null,
+          seo: buildSeo("limit"),
+        });
+      }
+      throw err;
     }
+
+    if (!placed.replay && placed.mode === "cart") {
+      cart.clearCart(req);
+    }
+
+    const order = await db.getOrder(placed.orderId);
+    if (!placed.replay && placed.mailPermitted && order) {
+      const lineItems = await db.getOrderLineItems(order);
+      const subtotal = db.orderSubtotal(lineItems);
+      const hasPrices = lineItems.every((item) => item.unitPrice !== null);
+      mail
+        .sendOrderConfirmation({ order, lineItems, subtotal, hasPrices })
+        .catch((err) => {
+          console.error("[mail] Unexpected error sending confirmation:", err);
+        });
+    }
+
+    const items = await itemsFromLines(placed.lines);
+    return res.render("success", {
+      orderId: placed.orderId,
+      email: email || (order && order.email) || null,
+      phone: phone || (order && order.phone) || null,
+      items,
+      total: cart.cartTotal(items),
+      product: items.length === 1 ? items[0].product : null,
+      seo: buildSeo("success"),
+    });
   } catch (err) {
     next(err);
   }
@@ -598,8 +674,6 @@ app.post("/confirm", async (req, res, next) => {
 // ---------------------------------------------------------------------------
 // Customer accounts (email register + return-customer sign-in)
 // ---------------------------------------------------------------------------
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function renderLogin(res, extra = {}) {
   return res.render("login", {
@@ -818,7 +892,8 @@ app.get("/admin/ship", async (req, res, next) => {
 
 /**
  * Record tracking and mark one order shipped.
- * Stock is reduced inside db.shipOrder; a second submit does not reduce it again.
+ * Stock is held at checkout for new orders. shipOrder decrements only when
+ * the order did not already hold stock, and a second submit does not reduce it again.
  */
 app.post("/admin/ship", async (req, res, next) => {
   try {
@@ -842,9 +917,12 @@ app.post("/admin/ship", async (req, res, next) => {
         };
       } else {
         const carrier = order.carrier ? ` (${order.carrier})` : "";
+        const stockNote = result.stockDecremented
+          ? "Stock was reduced for each item on this order."
+          : "Stock was already held at checkout, so inventory was not reduced again.";
         req.session.adminFlash = {
           kind: "success",
-          message: `Shipped order ${display}. Tracking ${order.tracking_number}${carrier}. Stock was reduced for each item on this order.`,
+          message: `Shipped order ${display}. Tracking ${order.tracking_number}${carrier}. ${stockNote}`,
         };
       }
     } catch (err) {
@@ -1121,8 +1199,14 @@ async function start() {
   }
 }
 
+async function ready() {
+  await db.initDb();
+  appReady = true;
+}
+
 if (require.main === module) {
   start();
 }
 
+app.ready = ready;
 module.exports = app;

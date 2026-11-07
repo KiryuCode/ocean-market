@@ -16,8 +16,43 @@ const STORE_TAGLINE = "Live reef. Honest packing. Overnight.";
 // ---------------------------------------------------------------------------
 // Order limits
 // ---------------------------------------------------------------------------
-/** Maximum confirmed orders allowed per client IP address */
+/** Maximum confirmed orders allowed per client IP address (lifetime cap). */
 const MAX_ORDERS_PER_IP = 20;
+
+/**
+ * Read a non-negative integer env var. Empty or invalid values use fallback.
+ * A configured 0 is preserved (callers treat 0 as "this limit is off").
+ */
+function readLimit(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+}
+
+function readWindowMs(name, fallbackSec) {
+  const sec = readLimit(name, fallbackSec);
+  return (sec > 0 ? sec : fallbackSec) * 1000;
+}
+
+/**
+ * Abuse throttles for checkout creation and order mail.
+ * Read on each call so operators can change env without a code edit.
+ * A limit of 0 disables that one counter. Windows stay at least the fallback.
+ */
+function getAbuseLimits() {
+  const ttlSec = readLimit("CHECKOUT_TOKEN_TTL_SEC", 7200);
+  return {
+    orderIp: readLimit("ORDER_RATE_LIMIT_IP", 5),
+    orderEmail: readLimit("ORDER_RATE_LIMIT_EMAIL", 3),
+    orderWindowMs: readWindowMs("ORDER_RATE_WINDOW_SEC", 3600),
+    mailIp: readLimit("MAIL_RATE_LIMIT_IP", 5),
+    mailEmail: readLimit("MAIL_RATE_LIMIT_EMAIL", 3),
+    mailWindowMs: readWindowMs("MAIL_RATE_WINDOW_SEC", 3600),
+    checkoutTtlMs: (ttlSec > 0 ? ttlSec : 7200) * 1000,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Database & server
@@ -383,6 +418,7 @@ module.exports = {
   STORE_NAME,
   STORE_TAGLINE,
   MAX_ORDERS_PER_IP,
+  getAbuseLimits,
   getMysqlConfig,
   PORT,
   HOST,
